@@ -1,7 +1,7 @@
 /***************************************************************************
  * CVSID: $Id$
  *
- * Generic methods for class devices
+ * Generic methods for bus devices
  *
  * Copyright (C) 2003 David Zeuthen, <david@fubar.dk>
  *
@@ -36,8 +36,7 @@
 #include <unistd.h>
 #include <stdarg.h>
 #include <limits.h>
-
-#include <linux/input.h>	/* for EV_* etc. */
+#include <glib.h>
 
 #include "../logger.h"
 #include "../device_store.h"
@@ -52,9 +51,14 @@
  * @{
  */
 
+typedef struct {
+	HalDevice *device;
+	BusDeviceHandler *handler;
+} AsyncInfo;
+
 /* fwd decl */
-static void bus_device_got_parent (HalDevice * parent,
-				   void *data1, void *data2);
+static void bus_device_got_parent (HalDeviceStore *store, HalDevice *parent,
+				   gpointer user_data);
 
 /** Generic accept function that accepts the device if and only if
  *  the bus name from sysfs equals the bus name in the class
@@ -96,8 +100,9 @@ bus_device_visit (BusDeviceHandler *self, const char *path,
 		return;
 */
 
-	/* Construct a new device */
+	/* Construct a new device and add to temporary device list */
 	d = hal_device_new ();
+	hal_device_store_add (hald_get_tdl (), d);
 	hal_device_property_set_string (d, "info.bus", self->hal_bus_name);
 	hal_device_property_set_string (d, "linux.sysfs_path", path);
 	hal_device_property_set_string (d, "linux.sysfs_path_device", path);
@@ -121,12 +126,25 @@ bus_device_visit (BusDeviceHandler *self, const char *path,
 	     bus_device_got_parent, 
 	     (void *) d, (void*) self,
 	     is_probing ? 0 : HAL_LINUX_HOTPLUG_TIMEOUT);
-#else
+#elif 0
 	bus_device_got_parent (
 		hal_device_store_match_key_value_string (hald_get_gdl (),
 							 "linux.sysfs_path_device",
 							 parent_sysfs_path),
 		d, self);
+#else
+	{
+		AsyncInfo *ai = g_new0 (AsyncInfo, 1);
+		ai->device = d;
+		ai->handler = self;
+		
+		hal_device_store_match_key_value_string_async (
+			hald_get_gdl (),
+			"linux.sysfs_path_device",
+			parent_sysfs_path,
+			bus_device_got_parent, ai,
+			is_probing ? 0 : HAL_LINUX_HOTPLUG_TIMEOUT);
+	}
 #endif
 
 	free (parent_sysfs_path);
@@ -140,14 +158,18 @@ bus_device_visit (BusDeviceHandler *self, const char *path,
  *  @param  data2               User data
  */
 static void
-bus_device_got_parent (HalDevice * parent, void *data1, void *data2)
+bus_device_got_parent (HalDeviceStore *store, HalDevice *parent,
+		       gpointer user_data)
 {
 	const char *sysfs_path = NULL;
 	char *new_udi = NULL;
 	HalDevice *new_d = NULL;
-	HalDevice *d = (HalDevice *) data1;
-	BusDeviceHandler *self = (BusDeviceHandler *) data2;
+	AsyncInfo *ai = (AsyncInfo*) user_data;
+	HalDevice *d = (HalDevice *) ai->device;
+	BusDeviceHandler *self = (BusDeviceHandler *) ai->handler;
 	struct sysfs_device *device;
+
+	g_free (ai);
 
 	/* set parent, if applicable */
 	if (parent != NULL) {
@@ -174,6 +196,7 @@ bus_device_got_parent (HalDevice * parent, void *data1, void *data2)
 		hal_device_store_add (hald_get_gdl (),
 				      new_d != NULL ? new_d : d);
 	}
+	hal_device_store_remove (hald_get_tdl (), d);
 	g_object_unref (d);
 }
 

@@ -107,7 +107,9 @@ class_device_visit (ClassDeviceHandler *self,
 		return;
 	}
 
+	/* Construct a new device and add to temporary device list */
 	d = hal_device_new ();
+	hal_device_store_add (hald_get_tdl (), d);
 	if (!self->merge_or_add) {
 		hal_device_property_set_string (d, "info.bus", self->hal_class_name);
 		hal_device_property_set_string (d, "linux.sysfs_path", path);
@@ -304,6 +306,7 @@ class_device_got_parent_device (HalDevice *parent, void *data1, void *data2)
 		HAL_WARNING (("No parent for class device at sysfs path %s",
 			      d->udi));
 		/* get rid of temporary device */
+		hal_device_store_remove (hald_get_tdl (), d);
 		g_object_unref (d);
 		return;
 	}
@@ -357,6 +360,7 @@ class_device_got_parent_device (HalDevice *parent, void *data1, void *data2)
 			hal_device_store_add (hald_get_gdl (),
 					      new_d != NULL ? new_d : d);
 		}
+		hal_device_store_remove (hald_get_tdl (), d);
 		g_object_unref (d);
 	}
 }
@@ -384,6 +388,7 @@ class_device_got_sysdevice (HalDevice *sysdevice, void *data1, void *data2)
 	if (sysdevice == NULL) {
 		HAL_WARNING (("Sysdevice for a class device never appeared!"));
 		/* get rid of temporary device */
+		hal_device_store_remove (hald_get_tdl (), d);
 		g_object_unref (d);
 		return;
 	}
@@ -451,6 +456,7 @@ class_device_got_device_file (HalDevice *dm, void *data1, void *data2)
 	if (dm == NULL) {
 		HAL_WARNING (("Never got device file for class device at %s", 
 			      hal_device_property_get_string (d, ".udev.sysfs_path")));
+		hal_device_store_remove (hald_get_tdl (), d);
 		g_object_unref (d);
 		return;
 	}
@@ -482,6 +488,7 @@ class_device_got_device_file (HalDevice *dm, void *data1, void *data2)
 		hal_device_merge (sysdevice, d);
 
 		/* get rid of temporary device */
+		hal_device_store_remove (hald_get_tdl (), d);
 		g_object_unref (d);
 
 	} else {
@@ -497,6 +504,7 @@ class_device_got_device_file (HalDevice *dm, void *data1, void *data2)
 			hal_device_store_add (hald_get_gdl (),
 					      new_d != NULL ? new_d : d);
 		}
+		hal_device_store_remove (hald_get_tdl (), d);
 		g_object_unref (d);
 	}
 }

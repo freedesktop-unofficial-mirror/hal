@@ -58,6 +58,8 @@
 
 static HalDeviceStore *global_device_list = NULL;
 
+static HalDeviceStore *temporary_device_list = NULL;
+
 static void
 gdl_store_changed (HalDeviceStore *store, HalDevice *device,
 		   gboolean is_added, gpointer user_data)
@@ -112,6 +114,17 @@ hald_get_gdl (void)
 	}
 
 	return global_device_list;
+}
+
+HalDeviceStore *
+hald_get_tdl (void)
+{
+	if (temporary_device_list == NULL) {
+		temporary_device_list = hal_device_store_new ();
+		
+	}
+
+	return temporary_device_list;
 }
 
 /**

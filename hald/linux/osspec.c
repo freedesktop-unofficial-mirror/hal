@@ -73,7 +73,7 @@ static BusDeviceHandler* bus_device_handlers[] = {
 	&usb_bus_handler,
 	&usbif_bus_handler,
 	&ide_host_bus_handler,
-	&ide_bus_handler,
+        &ide_bus_handler,
 	NULL
 };
 
@@ -415,7 +415,23 @@ handle_hotplug (DBusConnection * connection, DBusMessage * message)
 		for (i=0; class_device_handlers[i] != NULL; i++) {
 			ClassDeviceHandler *ch = class_device_handlers[i];
 			if (strcmp (subsystem, ch->sysfs_class_name) == 0) {
-				/* @todo implement me */
+				if (!ch->merge_or_add) {
+					/* was actually added, so it makes sense to remove */
+
+					HalDevice *d;
+					d = hal_device_store_match_key_value_string (hald_get_gdl (), "linux.sysfs_path", sysfs_devpath);
+					if (d == NULL) {
+						HAL_WARNING (("Couldn't remove classdevice @ %s on hotplug remove", sysfs_devpath));
+					} else {
+						HAL_INFO (("Removing classdevice @ sysfspath %s, udi %s", sysfs_devpath, d->udi));
+						ch->removed (ch, sysfs_devpath, d);
+
+						hal_device_store_remove (hald_get_gdl (), d);
+						goto out;
+					}
+
+				}
+				HAL_INFO (("sysfs_devpath=%s by %s", sysfs_devpath, subsystem));
 			}
 		}
 	}
@@ -571,7 +587,7 @@ handle_udev_node_created (DBusConnection * connection,
 			filename, NULL);
 #else
 		hal_device_store_match_key_value_string_async (
-			hald_get_gdl (),
+			hald_get_tdl (),
 			".udev.sysfs_path",
 			sysfs_dev_path,
 			udev_node_created_cb, filename,

@@ -447,6 +447,7 @@ tryagain:
 				hal_device_print (d);
 				hal_device_print (computed_d);
 				/* indeed a match, must be b) ;ignore device */
+				hal_device_store_remove (hald_get_tdl (), d);
 				g_object_unref (d);
 				/* and return */
 				return NULL;

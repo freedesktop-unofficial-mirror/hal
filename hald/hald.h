@@ -39,6 +39,7 @@
  */
 
 HalDeviceStore *hald_get_gdl (void);
+HalDeviceStore *hald_get_tdl (void);
 
 void property_atomic_update_begin ();
 void property_atomic_update_end ();

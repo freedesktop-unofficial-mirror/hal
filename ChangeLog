@@ -1,3 +1,28 @@
+2004-04-02  David Zeuthen  <david@fubar.dk>
+
+	* hald/linux/osspec.c (handle_hotplug): Actually remove class devices
+	that populate the tree
+	(handle_udev_node_created): Search in Temporary Device List instead of
+	the Global Device List - quite important difference :-)
+
+	* hald/linux/common.c (rename_and_merge): remove from tdl
+
+	* hald/linux/class_device.c (class_device_visit): add to tdl
+	(class_device_got_parent_device): remove from tdl
+	(class_device_got_sysdevice): remove from tdl
+	(class_device_got_device_file): remove from tdl
+
+	* hald/linux/bus_device.c (bus_device_visit): Asynchronously find
+	the parent device instead of synchronously
+	(bus_device_got_parent): New format
+
+	* hald/linux/block_class_device.c (block_class_visit): add to tdl
+	(detect_media): Add the patch from rml for storage.cdrom.media_type
+	(block_class_removed): new function
+
+	* hald/hald.c (hald_get_tdl): New function to get temporary device
+	list
+
 2004-04-01  David Zeuthen  <david@fubar.dk>
 
 	* hald/linux/common.c (rename_and_merge): Fixed a subtle error where

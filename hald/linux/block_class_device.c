@@ -95,6 +95,7 @@ block_class_visit (ClassDeviceHandler *self,
 		return;
 
 	d = hal_device_new ();
+	hal_device_store_add (hald_get_tdl (), d);
 	hal_device_property_set_string (d, "info.bus", self->hal_class_name);
 	hal_device_property_set_string (d, "linux.sysfs_path", path);
 	hal_device_property_set_string (d, "linux.sysfs_path_device", path);
@@ -130,7 +131,7 @@ block_class_visit (ClassDeviceHandler *self,
 		self->udev_event (self, d, dev_file);
 	}
 
-	/* Now find the physical device; this happens asynchronously as it
+	/* Now find the parent device; this happens asynchronously as it
 	 * might be added later. */
 #if 0
 	ds_device_async_find_by_key_value_string
@@ -476,6 +477,7 @@ detect_media (HalDevice * d)
 
 			if (child != NULL) {
 				HAL_INFO (("Removing volume for optical device %s", device_file));
+				hal_device_store_remove (hald_get_gdl (), child);
 				g_object_unref (child);
 
 				close (fd);
@@ -496,13 +498,12 @@ detect_media (HalDevice * d)
 		 * only one child)
 		 */
 
-		close (fd);
-
 		child = hal_device_store_match_key_value_string (
 			hald_get_gdl (), "info.parent",
 			hal_device_get_udi (d));
 
 		if (child == NULL) {
+			int type;
 			char udi[256];
 
 			/* nope, add child */
@@ -534,6 +535,42 @@ detect_media (HalDevice * d)
 			hal_device_property_set_string (child, "info.udi", udi);
 			hal_device_set_udi (child, udi);
 
+			/* set disc media type as appropriate */
+			type = ioctl (fd, CDROM_DISC_STATUS, CDSL_CURRENT);
+			close(fd);
+			switch (type) {
+			case CDS_AUDIO:		/* audio CD */
+				hal_device_property_set_string (child,
+						"storage.cdrom.media_type",
+						"audio");
+				break;
+			case CDS_MIXED:		/* mixed mode CD */
+				hal_device_property_set_string (child,
+						"storage.cdrom.media_type",
+						"mixed");
+				break;
+			case CDS_DATA_1:	/* data CD */
+			case CDS_DATA_2:
+			case CDS_XA_2_1:
+			case CDS_XA_2_2:
+				hal_device_property_set_string (child,
+						"storage.cdrom.media_type",
+						"data");
+				break;
+			case CDS_NO_INFO:	/* blank or invalid CD */
+				hal_device_property_set_string (child,
+						"storage.cdrom.media_type",
+						"blank");
+				break;
+
+			default:		/* should never see this */
+				hal_device_property_set_string (child,
+						"storage.cdrom.media_type",
+						"unknown");
+				break;
+			}
+
+
 			/* add new device */
 			hal_device_store_add (hald_get_gdl (), child);
 			g_object_unref (child);
@@ -561,7 +598,6 @@ block_class_post_process (ClassDeviceHandler *self,
 	char *stordev_udi;
 	const char *device_file;
 
-	hal_device_print (d);
 	parent = hal_device_store_find (hald_get_gdl (),
 					hal_device_property_get_string (d, "info.parent"));
 	assert (parent != NULL);
@@ -1162,12 +1198,10 @@ linux_class_block_init ()
 
 
 
-/** Called when this device is about to be removed
- *
- *  @param  d                   Device
- */
-void
-linux_class_block_removed (HalDevice * d)
+static void
+block_class_removed (ClassDeviceHandler* self, 
+		      const char *sysfs_path, 
+		      HalDevice *d)
 {
 	if (hal_device_has_property (d, "block.is_volume")) {
 		if (hal_device_property_get_bool (d, "block.is_volume")) {
@@ -1225,7 +1259,7 @@ ClassDeviceHandler block_class_handler = {
 	class_device_shutdown,              /**< shutdown function */
 	block_class_tick,                   /**< timer function */
 	block_class_visit,                  /**< visitor function */
-	class_device_removed,               /**< class device is removed */
+	block_class_removed,               /**< class device is removed */
 	class_device_udev_event,            /**< handle udev event */
 	class_device_get_device_file_target,/**< where to store devfile name */
 	block_class_post_process,           /**< add more properties */
