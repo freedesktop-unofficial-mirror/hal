@@ -94,6 +94,7 @@ gboolean      hal_device_has_property        (HalDevice    *device,
 					      const char   *key);
 HalProperty  *hal_device_property_find       (HalDevice    *device,
 					      const char   *key);
+int           hal_device_num_properties      (HalDevice    *device);
 
 void          hal_device_property_foreach    (HalDevice    *device,
 					      HalDevicePropertyForeachFn callback,

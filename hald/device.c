@@ -345,6 +345,14 @@ hal_device_has_property (HalDevice *device, const char *key)
 	return hal_device_property_find (device, key) != NULL;
 }
 
+int
+hal_device_num_properties (HalDevice *device)
+{
+	g_return_val_if_fail (device != NULL, -1);
+
+	return g_slist_length (device->properties);
+}
+
 HalProperty *
 hal_device_property_find (HalDevice *device, const char *key)
 {
@@ -382,14 +390,6 @@ hal_device_property_foreach (HalDevice *device,
 		if (cont == FALSE)
 			return;
 	}
-}
-
-GSList *
-hal_device_get_properties (HalDevice *device)
-{
-	g_return_val_if_fail (device != NULL, NULL);
-
-	return device->properties;
 }
 
 int

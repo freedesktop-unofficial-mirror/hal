@@ -31,32 +31,33 @@
 
 typedef struct _HalProperty HalProperty;
 
-void          hal_property_free       (HalProperty *prop);
+void          hal_property_free          (HalProperty  *prop);
 
-HalProperty *hal_property_new_string (const char   *key,
-					const char   *value);
-HalProperty *hal_property_new_int    (const char   *key,
-					dbus_int32_t  value);
-HalProperty *hal_property_new_bool   (const char   *key,
-					dbus_bool_t   value);
-HalProperty *hal_property_new_double (const char   *key,
-					double        value);
+HalProperty *hal_property_new_string     (const char   *key,
+					  const char   *value);
+HalProperty *hal_property_new_int        (const char   *key,
+					  dbus_int32_t  value);
+HalProperty *hal_property_new_bool       (const char   *key,
+					  dbus_bool_t   value);
+HalProperty *hal_property_new_double     (const char   *key,
+					  double        value);
 
-const char   *hal_property_get_key    (HalProperty *prop);
-int           hal_property_get_type   (HalProperty *prop);
+const char   *hal_property_get_key       (HalProperty  *prop);
+int           hal_property_get_type      (HalProperty  *prop);
+char         *hal_property_get_as_string (HalProperty  *prop);
 
-const char   *hal_property_get_string (HalProperty *prop);
-dbus_int32_t  hal_property_get_int    (HalProperty *prop);
-dbus_bool_t   hal_property_get_bool   (HalProperty *prop);
-double        hal_property_get_double (HalProperty *prop);
+const char   *hal_property_get_string    (HalProperty  *prop);
+dbus_int32_t  hal_property_get_int       (HalProperty  *prop);
+dbus_bool_t   hal_property_get_bool      (HalProperty  *prop);
+double        hal_property_get_double    (HalProperty  *prop);
 
-void          hal_property_set_string (HalProperty *prop,
-					const char   *value);
-void          hal_property_set_int    (HalProperty *prop,
-					dbus_int32_t  value);
-void          hal_property_set_bool   (HalProperty *prop,
-					dbus_bool_t   value);
-void          hal_property_set_double (HalProperty *prop,
-					double        value);
+void          hal_property_set_string    (HalProperty  *prop,
+					  const char   *value);
+void          hal_property_set_int       (HalProperty  *prop,
+					  dbus_int32_t  value);
+void          hal_property_set_bool      (HalProperty  *prop,
+					  dbus_bool_t   value);
+void          hal_property_set_double    (HalProperty  *prop,
+					  double        value);
 
 #endif /* PROPERTY_H */

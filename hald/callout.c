@@ -33,6 +33,40 @@
 #define DEVICE_CALLOUT_DIR     PACKAGE_SYSCONF_DIR "/hal/device.d"
 #define CAPABILITY_CALLOUT_DIR PACKAGE_SYSCONF_DIR "/hal/capability.d"
 
+typedef struct {
+	char **envp;
+	int index;
+} ForeachPropInfo;
+
+static gboolean
+add_property_to_env (HalDevice *device, HalProperty *property, 
+		     gpointer user_data)
+{
+	ForeachPropInfo *info = user_data;
+	char *prop_upper;
+	char *c;
+
+	prop_upper = g_ascii_strup (hal_property_get_key (property), -1);
+
+	/* periods aren't valid in the environment, so replace them with
+	 * underscores. */
+	for (c = prop_upper; *c; c++) {
+		if (*c == '.')
+			*c = '_';
+	}
+
+	info->envp[info->index] =
+		g_strdup_printf ("HAL_PROP_%s=%s",
+				 prop_upper,
+				 hal_property_get_as_string (property));
+
+	g_free (prop_upper);
+
+	info->index++;
+
+	return TRUE;
+}
+
 void
 hal_callout_device (HalDevice *device, gboolean added)
 {
@@ -58,9 +92,13 @@ hal_callout_device (HalDevice *device, gboolean added)
 		char *argv[] = { (char *) filename,
 				 added == TRUE ? "add" : "remove",
 				 NULL };
-		char *envp[1];
-		char *full_filename = g_build_filename (DEVICE_CALLOUT_DIR,
-							filename);
+		char **envp;
+		char *full_filename;
+		int num_props;
+		ForeachPropInfo info;
+
+		full_filename = g_build_filename (DEVICE_CALLOUT_DIR,
+						  filename, NULL);
 
 		if (!g_file_test (full_filename, G_FILE_TEST_IS_EXECUTABLE)) {
 			g_free (full_filename);
@@ -68,9 +106,20 @@ hal_callout_device (HalDevice *device, gboolean added)
 		}
 
 		g_free (full_filename);
+
+		num_props = hal_device_num_properties (device);
+
+		/* Extra one for the UDI, extra one for NULL */
+		envp = g_new0 (char *, num_props + 2);
 		
 		envp[0] = g_strdup_printf ("UDI=%s",
 					   hal_device_get_udi (device));
+
+		info.envp = envp;
+		info.index = 1;
+
+		hal_device_property_foreach (device, add_property_to_env,
+					     &info);
 
 		if (!g_spawn_sync (DEVICE_CALLOUT_DIR, argv, envp, 0,
 				   NULL, NULL, NULL, NULL, NULL, &err)) {
@@ -79,7 +128,7 @@ hal_callout_device (HalDevice *device, gboolean added)
 			g_error_free (err);
 		}
 
-		g_free (envp[0]);
+		g_strfreev (envp);
 	}
 }
 
@@ -108,9 +157,13 @@ hal_callout_capability (HalDevice *device, const char *capability, gboolean adde
 		char *argv[] = { (char *) filename,
 				 added == TRUE ? "add" : "remove",
 				 NULL };
-		char *envp[2];
-		char *full_filename = g_build_filename (CAPABILITY_CALLOUT_DIR,
-							filename);
+		char **envp;
+		char *full_filename;
+		int num_props;
+		ForeachPropInfo info;
+
+		full_filename = g_build_filename (CAPABILITY_CALLOUT_DIR,
+						  filename, NULL);
 
 		if (!g_file_test (full_filename, G_FILE_TEST_IS_EXECUTABLE)) {
 			g_free (full_filename);
@@ -119,9 +172,17 @@ hal_callout_capability (HalDevice *device, const char *capability, gboolean adde
 
 		g_free (full_filename);
 		
+		num_props = hal_device_num_properties (device);
+
+		/* Extra one for UDI, one for capability, and one for NULL */
+		envp = g_new0 (char *, num_props + 3);
+
 		envp[0] = g_strdup_printf ("UDI=%s",
 					   hal_device_get_udi (device));
 		envp[1] = g_strdup_printf ("CAPABILITY=%s", capability);
+
+		info.envp = envp;
+		info.index = 2;
 
 		if (!g_spawn_sync (DEVICE_CALLOUT_DIR, argv, envp, 0,
 				   NULL, NULL, NULL, NULL, NULL, &err)) {
@@ -130,7 +191,6 @@ hal_callout_capability (HalDevice *device, const char *capability, gboolean adde
 			g_error_free (err);
 		}
 
-		g_free (envp[0]);
-		g_free (envp[1]);
+		g_strfreev (envp);
 	}
 }

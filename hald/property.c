@@ -154,6 +154,26 @@ hal_property_get_bool (HalProperty *prop)
 	return prop->bool_value;
 }
 
+char *
+hal_property_get_as_string (HalProperty *prop)
+{
+	g_return_val_if_fail (prop != NULL, NULL);
+
+	switch (prop->type) {
+	case DBUS_TYPE_STRING:
+		return g_strdup (prop->str_value);
+	case DBUS_TYPE_INT32:
+		return g_strdup_printf ("%d", prop->int_value);
+	case DBUS_TYPE_BOOLEAN:
+		/* FIXME: Maybe use 1 and 0 here instead? */
+		return g_strdup (prop->bool_value ? "true" : "false");
+	case DBUS_TYPE_DOUBLE:
+		return g_strdup_printf ("%f", prop->double_value);
+	default:
+		return NULL;
+	}
+}
+
 double
 hal_property_get_double (HalProperty *prop)
 {
