@@ -972,7 +972,7 @@ device_add_capability (DBusConnection * connection, DBusMessage * message)
 		}
 	}
 
-	manager_send_signal_new_capability (udi, capability);
+	manager_send_signal_new_capability (d, capability);
 
 	reply = dbus_message_new_method_return (message);
 	if (reply == NULL)
