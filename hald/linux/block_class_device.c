@@ -1209,7 +1209,7 @@ block_class_tick (ClassDeviceHandler *self)
 		etc_mtab_process_all_block_devices (FALSE);
 	}
 
-	HAL_INFO (("exiting"));
+	/* HAL_INFO (("exiting")); */
 }
 
 static void

@@ -16,6 +16,7 @@ BUILT_SOURCES =		\
 
 hald_SOURCES =                                                          \
 	hald_marshal.h			hald_marshal.c			\
+	callout.h			callout.c			\
 	device.h			device.c			\
 	device_info.h			device_info.c			\
 	device_store.h			device_store.c			\

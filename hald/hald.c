@@ -42,6 +42,7 @@
 #include <dbus/dbus.h>
 #include <dbus/dbus-glib.h>
 
+#include "callout.h"
 #include "logger.h"
 #include "hald.h"
 #include "device_store.h"
@@ -68,10 +69,13 @@ gdl_store_changed (HalDeviceStore *store, HalDevice *device,
 
 	hal_device_print (device);
 
-	if (is_added)
+	if (is_added) {
 		manager_send_signal_device_added (device);
-	else
+		hal_callout_device (device, TRUE);
+	} else {
 		manager_send_signal_device_removed (device);
+		hal_callout_device (device, FALSE);
+	}
 }
 
 static void
@@ -87,6 +91,7 @@ gdl_capability_added (HalDeviceStore *store, HalDevice *device,
 		      const char *capability, gpointer user_data)
 {
 	manager_send_signal_new_capability (device, capability);
+	hal_callout_capability (device, capability, TRUE);
 }
 
 HalDeviceStore *
