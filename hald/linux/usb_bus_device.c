@@ -606,15 +606,6 @@ usb_device_init ()
 	usb_proc_parse ();
 }
 
-/** This function is called when all device detection on startup is done
- *  in order to perform optional batch processing on devices
- *
- */
-static void
-usb_device_detection_done ()
-{
-}
-
 
 /** Shutdown function for USB handling
  *

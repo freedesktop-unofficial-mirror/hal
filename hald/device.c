@@ -678,3 +678,88 @@ hal_device_print (HalDevice *device)
         }
         printf ("\n");
 }
+
+
+typedef struct {
+	char *key;
+	HalDevice *device;
+	HalDeviceAsyncCallback callback;
+	gpointer user_data;
+
+	guint prop_signal_id;
+	guint timeout_id;
+} AsyncMatchInfo;
+
+static void
+destroy_async_match_info (AsyncMatchInfo *ai)
+{
+	g_free (ai->key);
+	g_signal_handler_disconnect (ai->device, ai->prop_signal_id);
+	g_source_remove (ai->timeout_id);
+	g_free (ai);
+}
+
+static void
+prop_changed_cb (HalDevice *device, const char *key,
+		 gboolean removed, gboolean added, gpointer user_data)
+{
+	AsyncMatchInfo *ai = user_data;
+
+	if (strcmp (key, ai->key) != 0)
+		return;
+
+	/* the property is no longer there */
+	if (removed)
+		goto cleanup;
+
+
+	ai->callback (ai->device, ai->user_data, TRUE);
+
+cleanup:
+	destroy_async_match_info (ai);
+}
+
+
+static gboolean
+async_wait_timeout (gpointer user_data)
+{
+	AsyncMatchInfo *ai = (AsyncMatchInfo *) user_data;
+
+	ai->callback (ai->device, ai->user_data, FALSE);
+
+	destroy_async_match_info (ai);
+
+	return FALSE;
+}
+
+void
+hal_device_async_wait_property (HalDevice    *device,
+				const char   *key,
+				HalDeviceAsyncCallback callback,
+				gpointer     user_data,
+				int          timeout)
+{
+	HalProperty *prop;
+	AsyncMatchInfo *ai;
+
+	/* check if property already exists */
+	prop = hal_device_property_find (device, key);
+
+	if (prop != NULL || timeout==0) {
+		callback (device, user_data, prop != NULL);
+		return;
+	}
+
+	ai = g_new0 (AsyncMatchInfo, 1);
+
+	ai->device = device;
+	ai->key = g_strdup (key);
+	ai->callback = callback;
+	ai->user_data = user_data;
+
+	ai->prop_signal_id = g_signal_connect (device, "property_changed",
+					       G_CALLBACK (prop_changed_cb),
+					       ai);
+
+	ai->timeout_id = g_timeout_add (timeout, async_wait_timeout, ai);
+}

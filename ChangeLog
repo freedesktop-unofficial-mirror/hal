@@ -1,3 +1,13 @@
+2004-04-03  David Zeuthen  <david@fubar.dk>
+
+	* hald/linux/bus_device.c: Various cleanups
+
+	* hald/linux/class_device.c: Various cleanups
+
+	* hald/linux/block_class_device.c: Various cleanups
+
+	* hald/device.c (hal_device_async_wait_property): New method
+
 2004-04-02  David Zeuthen  <david@fubar.dk>
 
 	* hald/linux/osspec.c (handle_hotplug): Actually remove class devices

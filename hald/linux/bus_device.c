@@ -76,7 +76,7 @@ bus_device_accept (BusDeviceHandler *self, const char *path,
 	return strcmp (device->bus, self->sysfs_bus_name) == 0;
 }
 
-/** Visitor function for PCI device.
+/** Visitor function for a bus device.
  *
  *  This function parses the attributes present and creates a new HAL
  *  device based on this information.
@@ -90,15 +90,10 @@ void
 bus_device_visit (BusDeviceHandler *self, const char *path, 
 		  struct sysfs_device *device, dbus_bool_t is_probing)
 {
+	AsyncInfo *ai;
 	HalDevice *d;
 	char *parent_sysfs_path;
 	char buf[256];
-
-	/* only care about given bus name  */
-/*
-	if (strcmp (device->bus, self->sysfs_bus_name) != 0)
-		return;
-*/
 
 	/* Construct a new device and add to temporary device list */
 	d = hal_device_new ();
@@ -120,32 +115,17 @@ bus_device_visit (BusDeviceHandler *self, const char *path,
 	 * be added later. If we are probing this can't happen so the
 	 * timeout is set to zero in that event
 	 */
-#if 0
-	ds_device_async_find_by_key_value_string
-	    ("linux.sysfs_path_device", parent_sysfs_path, TRUE,
-	     bus_device_got_parent, 
-	     (void *) d, (void*) self,
-	     is_probing ? 0 : HAL_LINUX_HOTPLUG_TIMEOUT);
-#elif 0
-	bus_device_got_parent (
-		hal_device_store_match_key_value_string (hald_get_gdl (),
-							 "linux.sysfs_path_device",
-							 parent_sysfs_path),
-		d, self);
-#else
-	{
-		AsyncInfo *ai = g_new0 (AsyncInfo, 1);
-		ai->device = d;
-		ai->handler = self;
+
+	ai = g_new0 (AsyncInfo, 1);
+	ai->device = d;
+	ai->handler = self;
 		
-		hal_device_store_match_key_value_string_async (
-			hald_get_gdl (),
-			"linux.sysfs_path_device",
-			parent_sysfs_path,
-			bus_device_got_parent, ai,
-			is_probing ? 0 : HAL_LINUX_HOTPLUG_TIMEOUT);
-	}
-#endif
+	hal_device_store_match_key_value_string_async (
+		hald_get_gdl (),
+		"linux.sysfs_path_device",
+		parent_sysfs_path,
+		bus_device_got_parent, ai,
+		is_probing ? 0 : HAL_LINUX_HOTPLUG_TIMEOUT);
 
 	free (parent_sysfs_path);
 }
@@ -153,9 +133,9 @@ bus_device_visit (BusDeviceHandler *self, const char *path,
 /** Callback when the parent is found or if there is no parent.. This is
  *  where we get added to the GDL..
  *
+ *  @param  store               Device store we searched
  *  @param  parent              Async Return value from the find call
- *  @param  data1               User data
- *  @param  data2               User data
+ *  @param  user_data           User data from find call
  */
 static void
 bus_device_got_parent (HalDeviceStore *store, HalDevice *parent,
@@ -171,7 +151,7 @@ bus_device_got_parent (HalDeviceStore *store, HalDevice *parent,
 
 	g_free (ai);
 
-	/* set parent, if applicable */
+	/* set parent, if any */
 	if (parent != NULL) {
 		hal_device_property_set_string (d, "info.parent", parent->udi);
 	}
@@ -230,7 +210,7 @@ bus_device_shutdown (BusDeviceHandler *self)
 
 
 /** Called regulary (every two seconds) for polling / monitoring on devices
- *  of this bus type. Empty
+ *  of this bus type. 
  *
  *  @param  self          Pointer to class members
  */
@@ -248,8 +228,7 @@ bus_device_tick (BusDeviceHandler *self)
  *                        this device
  */
 void
-bus_device_removed (BusDeviceHandler *self, 
-		    const char *sysfs_path, 
+bus_device_removed (BusDeviceHandler *self, const char *sysfs_path, 
 		    HalDevice *d)
 {
 }

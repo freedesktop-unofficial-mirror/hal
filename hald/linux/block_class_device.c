@@ -27,6 +27,8 @@
 #  include <config.h>
 #endif
 
+#define _GNU_SOURCE 1
+
 #include <ctype.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -37,26 +39,24 @@
 #include <stdarg.h>
 #include <limits.h>
 #include <errno.h>
+#include <signal.h>
+#include <fcntl.h>
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <sys/ioctl.h>
-#include <signal.h>
-
-#include "../logger.h"
-#include "../device_store.h"
-#include "../hald.h"
-#include "../hald_dbus.h"
-
-#include "class_device.h"
-#include "common.h"
-
-#include "linux_dvd_rw_utils.h"
-
-#define _GNU_SOURCE 1
-#include <linux/fcntl.h>
 #include <linux/kdev_t.h>
 #include <linux/cdrom.h>
 #include <linux/fs.h>
+#include <glib.h>
+ 
+#include "../hald.h"
+#include "../hald_dbus.h"
+#include "../logger.h"
+#include "../device_store.h"
+#include "class_device.h"
+#include "common.h"
+ 
+#include "linux_dvd_rw_utils.h"
 
 /**
  * @defgroup HalDaemonLinuxBlock Block device class
@@ -71,17 +71,6 @@ typedef struct {
 } AsyncInfo;
 
 static void
-got_parent_device_cb (HalDeviceStore *store, HalDevice *parent,
-		      gpointer user_data)
-{
-	AsyncInfo *ai = user_data;
-
-	class_device_got_parent_device (parent, ai->device, ai->handler);
-
-	g_free (ai);
-}
-
-static void
 block_class_visit (ClassDeviceHandler *self,
 		   const char *path,
 		   struct sysfs_class_device *class_device,
@@ -89,6 +78,7 @@ block_class_visit (ClassDeviceHandler *self,
 {
 	HalDevice *d;
 	char *parent_sysfs_path;
+	AsyncInfo *ai;
 
 	/* only care about given sysfs class name */
 	if (strcmp (class_device->classname, "block") != 0)
@@ -133,33 +123,16 @@ block_class_visit (ClassDeviceHandler *self,
 
 	/* Now find the parent device; this happens asynchronously as it
 	 * might be added later. */
-#if 0
-	ds_device_async_find_by_key_value_string
-		("linux.sysfs_path_device", 
-		 parent_sysfs_path,
-		 TRUE, class_device_got_parent_device, 
-		 (void *) d, (void *) self,
-		 is_probing ? 0 : HAL_LINUX_HOTPLUG_TIMEOUT);
-#elif 0
-	class_device_got_parent_device (
-		hal_device_store_match_key_value_string (hald_get_gdl (),
-							 "linux.sysfs_path_device",
-							 parent_sysfs_path),
-		d, self);
-#else
-	{
-		AsyncInfo *ai = g_new0 (AsyncInfo, 1);
-		ai->device = d;
-		ai->handler = self;
+	ai = g_new0 (AsyncInfo, 1);
+	ai->device = d;
+	ai->handler = self;
 		
-		hal_device_store_match_key_value_string_async (
-			hald_get_gdl (),
-			"linux.sysfs_path_device",
-			parent_sysfs_path,
-			got_parent_device_cb, ai,
-			is_probing ? 0 : HAL_LINUX_HOTPLUG_TIMEOUT);
-	}
-#endif
+	hal_device_store_match_key_value_string_async (
+		hald_get_gdl (),
+		"linux.sysfs_path_device",
+		parent_sysfs_path,
+		class_device_got_parent_device, ai,
+		is_probing ? 0 : HAL_LINUX_HOTPLUG_TIMEOUT);
 }
 
 
@@ -1187,15 +1160,6 @@ sigio_handler (int sig)
 
 	sigio_etc_changed = TRUE;
 }
-
-/** Init function for block device handling
- *
- */
-void
-linux_class_block_init ()
-{
-}
-
 
 
 static void

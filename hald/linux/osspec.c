@@ -541,7 +541,7 @@ udev_node_created_cb (HalDeviceStore *store, HalDevice *device,
 {
 	const char *filename = user_data;
 
-	handle_udev_node_created_found_device (device, filename, NULL);
+	handle_udev_node_created_found_device (device, (void*) filename, NULL);
 }
 
 /** Handle a org.freedesktop.Hal.HotplugEvent message. This message

@@ -37,8 +37,6 @@
 #include <stdarg.h>
 #include <limits.h>
 
-#include <linux/input.h>	/* for EV_* etc. */
-
 #include "../logger.h"
 #include "../device_store.h"
 #include "../hald.h"
@@ -59,26 +57,8 @@ typedef struct {
 } AsyncInfo;
 
 static void
-got_sysdevice_cb (HalDeviceStore *store, HalDevice *device,
-		  gpointer user_data)
-{
-	AsyncInfo *ai = user_data;
-
-	class_device_got_sysdevice (device, ai->device, ai->handler);
-
-	g_free (ai);
-}
-
-static void
-got_parent_cb (HalDeviceStore *store, HalDevice *device,
-	       gpointer user_data)
-{
-	AsyncInfo *ai = user_data;
-
-	class_device_got_parent_device (device, ai->device, ai->handler);
-
-	g_free (ai);
-}
+class_device_got_device_file (HalDevice *d, gpointer user_data, 
+			      gboolean prop_exists);
 
 
 /** Generic visitor method for class devices.
@@ -86,8 +66,10 @@ got_parent_cb (HalDeviceStore *store, HalDevice *device,
  *  This function parses the attributes present and merges more information
  *  into the HAL device this class device points to
  *
+ *  @param  self               Pointer to class members
  *  @param  path                Sysfs-path for class device
  *  @param  class_device        Libsysfs object for device
+ *  @param  is_probing          Whether we are probing
  */
 void
 class_device_visit (ClassDeviceHandler *self,
@@ -96,116 +78,91 @@ class_device_visit (ClassDeviceHandler *self,
 		    dbus_bool_t is_probing)
 {
 	HalDevice *d;
+	char dev_file[SYSFS_PATH_MAX];
 	char dev_file_prop_name[SYSFS_PATH_MAX];
 
 	/* only care about given sysfs class name */
 	if (strcmp (class_device->classname, self->sysfs_class_name) != 0)
 		return;
 
+	/* don't care if there is no sysdevice */
 	if (class_device->sysdevice == NULL) {
-		HAL_WARNING (("class device %s doesn't have sysdevice", path));
 		return;
 	}
 
 	/* Construct a new device and add to temporary device list */
 	d = hal_device_new ();
 	hal_device_store_add (hald_get_tdl (), d);
+
+	/* Need some properties if we are to appear in the tree on our own */
 	if (!self->merge_or_add) {
-		hal_device_property_set_string (d, "info.bus", self->hal_class_name);
+		hal_device_property_set_string (d, "info.bus", 
+						self->hal_class_name);
 		hal_device_property_set_string (d, "linux.sysfs_path", path);
 		hal_device_property_set_string (d, "linux.sysfs_path_device", 
 					class_device->sysdevice->path);
 	} 
 
+	/* We may require a device file */
 	if (self->require_device_file) {
-		/* temporary property used for _udev_event() */
+		/* Temporary property used for _udev_event() */
 		hal_device_property_set_string (d, ".udev.sysfs_path", path);
-		hal_device_property_set_string (d, ".udev.class_name", self->sysfs_class_name);
+		hal_device_property_set_string (d, ".udev.class_name", 
+						self->sysfs_class_name);
 
 		/* Find the property name we should store the device file in */
 		self->get_device_file_target (self, d, path, class_device,
-					      dev_file_prop_name, SYSFS_PATH_MAX);
-		hal_device_property_set_string (d, ".target_dev", dev_file_prop_name);
-	}
+					      dev_file_prop_name, 
+					      SYSFS_PATH_MAX);
+		hal_device_property_set_string (d, ".target_dev", 
+						dev_file_prop_name);
 
-	/* Ask udev about the device file if we are probing */
-	if (self->require_device_file && is_probing) {
-		char dev_file[SYSFS_PATH_MAX];
+		/* Ask udev about the device file if we are probing */
+		if (is_probing) {
+			if (!class_device_get_device_file (path, dev_file, 
+							   SYSFS_PATH_MAX)) {
+				HAL_WARNING (("Couldn't get device file for "
+					      "sysfs path %s", path));
+				return;
+			}
 
-		if (!class_device_get_device_file (path, dev_file, 
-						   SYSFS_PATH_MAX)) {
-			HAL_WARNING (("Couldn't get device file for sysfs "
-				      "path %s", path));
-			return;
+			/* If we are not probing this function will be called 
+			 * upon receiving a dbus event */
+			self->udev_event (self, d, dev_file);
 		}
-
-		/* If we are not probing this function will be called upon
-		 * receiving a dbus event */
-		self->udev_event (self, d, dev_file);
 	}
 
 	/* Now find the physical device; this happens asynchronously as it
 	 * might be added later. */
 	if (self->merge_or_add) {
-#if 0
-		ds_device_async_find_by_key_value_string
-			("linux.sysfs_path_device", 
-			 class_device->sysdevice->path,
-			 TRUE, class_device_got_sysdevice, 
-			 (void *) d, (void *) self,
-			 is_probing ? 0 : HAL_LINUX_HOTPLUG_TIMEOUT);
-#elif 0
-		class_device_got_sysdevice (
-			hal_device_store_match_key_value_string (hald_get_gdl (),
-								 "linux.sysfs_path_device",
-								 class_device->sysdevice->path),
-			d, self);
-#else
-		{
-			AsyncInfo *ai = g_new0 (AsyncInfo, 1);
-			ai->device = d;
-			ai->handler = self;
+		AsyncInfo *ai = g_new0 (AsyncInfo, 1);
+		ai->device = d;
+		ai->handler = self;
 
-			hal_device_store_match_key_value_string_async (
-				hald_get_gdl (),
-				"linux.sysfs_path_device",
-				class_device->sysdevice->path,
-				got_sysdevice_cb, ai,
-				is_probing ? 0 : HAL_LINUX_HOTPLUG_TIMEOUT);
-		}
-#endif
+		/* find the sysdevice */
+		hal_device_store_match_key_value_string_async (
+			hald_get_gdl (),
+			"linux.sysfs_path_device",
+			class_device->sysdevice->path,
+			class_device_got_sysdevice, ai,
+			is_probing ? 0 : HAL_LINUX_HOTPLUG_TIMEOUT);
 	} else {
 		char *parent_sysfs_path;
+		AsyncInfo *ai = g_new0 (AsyncInfo, 1);
 
-		parent_sysfs_path = get_parent_sysfs_path (class_device->sysdevice->path);
+		parent_sysfs_path = 
+			get_parent_sysfs_path (class_device->sysdevice->path);
 
-#if 0
-		ds_device_async_find_by_key_value_string
-			("linux.sysfs_path_device", 
-			 parent_sysfs_path,
-			 TRUE, class_device_got_parent_device, 
-			 (void *) d, (void *) self,
-			 is_probing ? 0 : HAL_LINUX_HOTPLUG_TIMEOUT);
-#elif 0
-		class_device_got_parent_device (
-			hal_device_store_match_key_value_string (hald_get_gdl (),
-								 "linux.sysfs_path_device",
-								 parent_sysfs_path),
-			d, self);
-#else
-		{
-			AsyncInfo *ai = g_new0 (AsyncInfo, 1);
-			ai->device = d;
-			ai->handler = self;
+		ai->device = d;
+		ai->handler = self;
 
-			hal_device_store_match_key_value_string_async (
-				hald_get_gdl (),
-				"linux.sysfs_path_device",
-				parent_sysfs_path,
-				got_parent_cb, ai,
-				is_probing ? 0 : HAL_LINUX_HOTPLUG_TIMEOUT);
-		}
-#endif
+		/* find the parent */
+		hal_device_store_match_key_value_string_async (
+			hald_get_gdl (),
+			"linux.sysfs_path_device",
+			parent_sysfs_path,
+			class_device_got_parent_device, ai,
+			is_probing ? 0 : HAL_LINUX_HOTPLUG_TIMEOUT);
 	}
 }
 
@@ -218,11 +175,10 @@ class_device_visit (ClassDeviceHandler *self,
  *                             this device class
  */
 void
-class_device_removed (ClassDeviceHandler* self, 
-		      const char *sysfs_path, 
+class_device_removed (ClassDeviceHandler* self, const char *sysfs_path, 
 		      HalDevice *d)
 {
-	HAL_INFO (("entering : sysfs_path = '%s'", sysfs_path));
+	HAL_INFO (("sysfs_path = '%s'", sysfs_path));
 }
 
 /** Called when a device file (e.g. a file in /dev) have been created by udev 
@@ -233,8 +189,8 @@ class_device_removed (ClassDeviceHandler* self,
  *  @param  dev_file            device file, e.g. /dev/input/event4
  */
 void
-class_device_udev_event (ClassDeviceHandler *self,
-			 HalDevice *d, char *dev_file)
+class_device_udev_event (ClassDeviceHandler *self, HalDevice *d, 
+			 char *dev_file)
 {
 	const char *target_dev;
 	char *target_dev_copy;
@@ -254,34 +210,6 @@ class_device_udev_event (ClassDeviceHandler *self,
 	free (target_dev_copy);
 }
 
-typedef struct {
-	char *target_dev;
-	ClassDeviceHandler *handler;
-	guint signal_id;
-} PropInfo;
-
-static void
-prop_changed_cb (HalDevice *device, const char *key,
-		 gboolean removed, gboolean added, gpointer user_data)
-{
-	PropInfo *pi = user_data;
-
-	if (strcmp (key, pi->target_dev) != 0)
-		return;
-
-	/* the property is no longer there */
-	if (removed)
-		goto cleanup;
-
-
-	class_device_got_device_file (device, device, pi->handler);
-
-cleanup:
-	g_signal_handler_disconnect (device, pi->signal_id);
-
-	g_free (pi->target_dev);
-	g_free (pi);
-}
 
 /** Callback when the parent device is found or if timeout for search occurs.
  *  (only applicable if self->merge_or_add==FALSE)
@@ -292,15 +220,19 @@ cleanup:
  *  @param  data2               User data
  */
 void
-class_device_got_parent_device (HalDevice *parent, void *data1, void *data2)
+class_device_got_parent_device (HalDeviceStore *store, HalDevice *parent, 
+				gpointer user_data)
 {
+	AsyncInfo *ai = user_data;
 	const char *target_dev = NULL;
 	const char *sysfs_path = NULL;
 	char *new_udi = NULL;
 	HalDevice *new_d = NULL;
-	HalDevice *d = (HalDevice *) data1;
-	ClassDeviceHandler *self = (ClassDeviceHandler *) data2;
+	HalDevice *d = (HalDevice *) ai->device;
+	ClassDeviceHandler *self = ai->handler;
 	struct sysfs_class_device *class_device;
+
+	g_free (ai);
 
 	if (parent == NULL) {
 		HAL_WARNING (("No parent for class device at sysfs path %s",
@@ -329,26 +261,12 @@ class_device_got_parent_device (HalDevice *parent, void *data1, void *data2)
 	if (self->require_device_file) {
 		target_dev = hal_device_property_get_string (d, ".target_dev");
 		assert (target_dev != NULL);
-#if 0
-		ds_device_async_wait_for_property (
+
+		hal_device_async_wait_property (
 			d, target_dev, 
 			class_device_got_device_file,
-			(void *) d, (void *) self,
+			(gpointer) self,
 			is_probing ? 0 : HAL_LINUX_HOTPLUG_TIMEOUT);
-#else
-		if (hal_device_has_property (d, target_dev))
-			class_device_got_device_file (d, d, self);
-		else {
-			PropInfo *pi;
-
-			pi = g_new0 (PropInfo, 1);
-			pi->target_dev = g_strdup (target_dev);
-			pi->handler = self;
-			pi->signal_id = g_signal_connect (d,
-							  "property_changed",
-							  prop_changed_cb, pi);
-		}
-#endif
 	} else {
 		/* Compute a proper UDI (unique device id) and try to locate a 
 		 * persistent unplugged device or simple add this new device...
@@ -375,13 +293,16 @@ class_device_got_parent_device (HalDevice *parent, void *data1, void *data2)
  *  @param  data2               User data
  */
 void
-class_device_got_sysdevice (HalDevice *sysdevice, void *data1, void *data2)
+class_device_got_sysdevice (HalDeviceStore *store, 
+			    HalDevice *sysdevice, 
+			    gpointer user_data)
 {
+	AsyncInfo *ai = user_data;
 	const char *target_dev;
 	const char *parent_udi;
 	HalDevice *parent_device;
-	HalDevice *d = (HalDevice *) data1;
-	ClassDeviceHandler *self = (ClassDeviceHandler *) data2;
+	HalDevice *d = (HalDevice *) ai->device;
+	ClassDeviceHandler *self = ai->handler;
 
 	HAL_INFO (("Entering d=0x%0x, sysdevice=0x%0x!", d, sysdevice));
 
@@ -413,47 +334,26 @@ class_device_got_sysdevice (HalDevice *sysdevice, void *data1, void *data2)
 	if (self->require_device_file ) {
 		target_dev = hal_device_property_get_string (d, ".target_dev");
 		assert (target_dev != NULL);
-#if 0
-		ds_device_async_wait_for_property (
+
+		hal_device_async_wait_property (
 			d, target_dev, 
 			class_device_got_device_file,
-			(void *) d, (void *) self,
+			(gpointer) self,
 			is_probing ? 0 : HAL_LINUX_HOTPLUG_TIMEOUT);
-#else
-		if (hal_device_has_property (d, target_dev))
-			class_device_got_device_file (d, d, self);
-		else {
-			PropInfo *pi;
-
-			pi = g_new0 (PropInfo, 1);
-			pi->target_dev = g_strdup (target_dev);
-			pi->handler = self;
-			pi->signal_id = g_signal_connect (d,
-							  "property_changed",
-							  prop_changed_cb, pi);
-		}
-#endif
 	} else {
 		/** @todo FIXME */
 		DIE (("fix me here"));
 	}
 }
 
-/** Callback when we got a device file found or on timeout on search occurs.
- *
- *  @param  sysdevice           Async Return value from the find call or NULL
- *                              if timeout
- *  @param  data1               User data (our own device in this case)
- *  @param  data2               User data
- */
-void
-class_device_got_device_file (HalDevice *dm, void *data1, void *data2)
+static void
+class_device_got_device_file (HalDevice *d, gpointer user_data, 
+			      gboolean prop_exists)
 {
-	HalDevice *d = (HalDevice *) data1;
 	HalDevice *sysdevice;
-	ClassDeviceHandler *self = (ClassDeviceHandler *) data2;
+	ClassDeviceHandler *self = (ClassDeviceHandler *) user_data;
 
-	if (dm == NULL) {
+	if (!prop_exists) {
 		HAL_WARNING (("Never got device file for class device at %s", 
 			      hal_device_property_get_string (d, ".udev.sysfs_path")));
 		hal_device_store_remove (hald_get_tdl (), d);

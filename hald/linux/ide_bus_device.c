@@ -59,7 +59,7 @@ ide_device_compute_udi (HalDevice *d, int append_num)
 			 hal_device_property_get_int (d, "ide.host"),
 			 hal_device_property_get_int (d, "ide.channel"));
 	else
-		sprintf (buf, "/org/freedesktop/Hal/devices/ide_%d_%d/d",
+		sprintf (buf, "/org/freedesktop/Hal/devices/ide_%d_%d/%d",
 			 hal_device_property_get_int (d, "ide.host"),
 			 hal_device_property_get_int (d, "ide.channel"),
 			 append_num);

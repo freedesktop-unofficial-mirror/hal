@@ -66,6 +66,10 @@ struct _HalDeviceClass {
 #define HAL_IS_DEVICE_CLASS(klass)  (G_TYPE_CHECK_CLASS_TYPE ((klass), \
                                      HAL_TYPE_DEVICE))
 
+typedef void     (*HalDeviceAsyncCallback) (HalDevice *device,
+					    gpointer user_data,
+					    gboolean prop_exists);
+
 /* Return value of FALSE means that the foreach should be short-circuited */
 typedef gboolean (*HalDevicePropertyForeachFn) (HalDevice *device,
 						HalProperty *property,
@@ -128,5 +132,11 @@ gboolean      hal_device_property_remove     (HalDevice    *device,
 					      const char   *key);
 
 void          hal_device_print               (HalDevice    *device);
+
+void          hal_device_async_wait_property (HalDevice    *device,
+					      const char   *key,
+					      HalDeviceAsyncCallback callback,
+					      gpointer     user_data,
+					      int          timeout);
 
 #endif /* DEVICE_H */
