@@ -1,7 +1,7 @@
 /***************************************************************************
  * CVSID: $Id$
  *
- * main.c : main() for HAL daemon
+ * dbus.c : D-BUS interface of HAL daemon
  *
  * Copyright (C) 2003 David Zeuthen, <david@fubar.dk>
  *
@@ -27,37 +27,20 @@
 #  include <config.h>
 #endif
 
-#include <stdio.h>
 #include <stdlib.h>
+#include <stdio.h>
 #include <string.h>
-#include <unistd.h>
-#include <getopt.h>
-#include <pwd.h>
-#include <sys/types.h>
-#include <sys/stat.h>
-#include <fcntl.h>
-#include <errno.h>
-#include <signal.h>
 
 #include <dbus/dbus.h>
 #include <dbus/dbus-glib.h>
 
-#include <libhal/libhal.h>	/* for common defines etc. */
-
-#include "logger.h"
 #include "hald.h"
+#include "hald_dbus.h"
+#include "device.h"
 #include "device_store.h"
-#include "device_info.h"
+#include "logger.h"
 #include "osspec.h"
 
-
-/**
- * @defgroup HalDaemon HAL daemon
- * @brief The HAL daemon manages persistent device objects available through
- *        a D-BUS network API
- */
-
-/** D-Bus connection object for the HAL service */
 static DBusConnection *dbus_connection;
 
 /**
@@ -213,6 +196,17 @@ raise_syntax (DBusConnection * connection,
  * @{
  */
 
+static gboolean
+foreach_device_get_udi (HalDeviceStore *store, HalDevice *device,
+			gpointer user_data)
+{
+	DBusMessageIter *iter = user_data;
+
+	dbus_message_iter_append_string (iter, hal_device_get_udi (device));
+
+	return TRUE;
+}
+
 /** Get all devices.
  *
  *  <pre>
@@ -223,16 +217,13 @@ raise_syntax (DBusConnection * connection,
  *  @param  message             Message
  *  @return                     What to do with the message
  */
-static DBusHandlerResult
+DBusHandlerResult
 manager_get_all_devices (DBusConnection * connection,
 			 DBusMessage * message)
 {
 	DBusMessage *reply;
 	DBusMessageIter iter;
 	DBusMessageIter iter_array;
-	HalDevice *d;
-	const char *udi;
-	HalDeviceIterator iter_device;
 
 	HAL_TRACE (("entering"));
 
@@ -244,16 +235,9 @@ manager_get_all_devices (DBusConnection * connection,
 	dbus_message_iter_append_array (&iter, &iter_array,
 					DBUS_TYPE_STRING);
 
-	for (ds_device_iter_begin (&iter_device);
-	     ds_device_iter_has_more (&iter_device);
-	     ds_device_iter_next (&iter_device)) {
-		d = ds_device_iter_get (&iter_device);
-		/* only return devices in the GDL */
-		if (d->in_gdl) {
-			udi = ds_device_get_udi (d);
-			dbus_message_iter_append_string (&iter_array, udi);
-		}
-	}
+	hal_device_store_foreach (hald_get_gdl (),
+				  foreach_device_get_udi,
+				  &iter_array);
 
 	if (!dbus_connection_send (connection, reply, NULL))
 		DIE (("No memory"));
@@ -263,6 +247,32 @@ manager_get_all_devices (DBusConnection * connection,
 	return DBUS_HANDLER_RESULT_NOT_YET_HANDLED;
 }
 
+typedef struct {
+	const char *key;
+	const char *value;
+	DBusMessageIter *iter;
+} DeviceMatchInfo;
+
+static gboolean
+foreach_device_match_get_udi (HalDeviceStore *store, HalDevice *device,
+			      gpointer user_data)
+{
+	DeviceMatchInfo *info = user_data;
+	const char *dev_value;
+
+	if (hal_device_property_get_type (device,
+					  info->key) != DBUS_TYPE_STRING)
+		return TRUE;
+
+	dev_value = hal_device_property_get_string (device, info->key);
+
+	if (dev_value != NULL && strcmp (dev_value, info->value) == 0) {
+		dbus_message_iter_append_string (info->iter,
+						 hal_device_get_udi (device));
+	}
+
+	return TRUE;
+}
 
 /** Find devices in the GDL where a single string property matches a given
  *  value.
@@ -276,7 +286,7 @@ manager_get_all_devices (DBusConnection * connection,
  *  @param  message             Message
  *  @return                     What to do with the message
  */
-static DBusHandlerResult
+DBusHandlerResult
 manager_find_device_string_match (DBusConnection * connection,
 				  DBusMessage * message)
 {
@@ -286,9 +296,7 @@ manager_find_device_string_match (DBusConnection * connection,
 	DBusError error;
 	const char *key;
 	const char *value;
-	HalDeviceIterator iter_device;
-	int type;
-	HalDevice *device;
+	DeviceMatchInfo info;
 
 	HAL_TRACE (("entering"));
 
@@ -310,23 +318,12 @@ manager_find_device_string_match (DBusConnection * connection,
 	dbus_message_iter_append_array (&iter, &iter_array,
 					DBUS_TYPE_STRING);
 
-	for (ds_device_iter_begin (&iter_device);
-	     ds_device_iter_has_more (&iter_device);
-	     ds_device_iter_next (&iter_device)) {
-		device = ds_device_iter_get (&iter_device);
+	info.key = key;
+	info.iter = &iter_array;
 
-		if (!device->in_gdl)
-			continue;
-
-		type = ds_property_get_type (device, key);
-		if (type == DBUS_TYPE_STRING) {
-			if (strcmp (ds_property_get_string (device, key),
-				    value) == 0)
-				dbus_message_iter_append_string
-				    (&iter_array, device->udi);
-		}
-	}
-
+	hal_device_store_foreach (hald_get_gdl (),
+				  foreach_device_match_get_udi,
+				  &info);
 
 	if (!dbus_connection_send (connection, reply, NULL))
 		DIE (("No memory"));
@@ -336,6 +333,27 @@ manager_find_device_string_match (DBusConnection * connection,
 	return DBUS_HANDLER_RESULT_NOT_YET_HANDLED;
 }
 
+typedef struct {
+	const char *capability;
+	DBusMessageIter *iter;
+} DeviceCapabilityInfo;
+
+static gboolean
+foreach_device_by_capability (HalDeviceStore *store, HalDevice *device,
+			      gpointer user_data)
+{
+	DeviceCapabilityInfo *info = user_data;
+	const char *caps;
+
+	caps = hal_device_property_get_string (device, "info.capabilities");
+
+	if (strstr (caps, info->capability) != NULL) {
+		dbus_message_iter_append_string (info->iter,
+						 hal_device_get_udi (device));
+	}
+
+	return TRUE;
+}
 
 /** Find devices in the GDL with a given capability.
  *
@@ -347,7 +365,7 @@ manager_find_device_string_match (DBusConnection * connection,
  *  @param  message             Message
  *  @return                     What to do with the message
  */
-static DBusHandlerResult
+DBusHandlerResult
 manager_find_device_by_capability (DBusConnection * connection,
 				   DBusMessage * message)
 {
@@ -356,9 +374,7 @@ manager_find_device_by_capability (DBusConnection * connection,
 	DBusMessageIter iter_array;
 	DBusError error;
 	const char *capability;
-	HalDeviceIterator iter_device;
-	int type;
-	HalDevice *device;
+	DeviceCapabilityInfo info;
 
 	HAL_TRACE (("entering"));
 
@@ -379,24 +395,12 @@ manager_find_device_by_capability (DBusConnection * connection,
 	dbus_message_iter_append_array (&iter, &iter_array,
 					DBUS_TYPE_STRING);
 
-	for (ds_device_iter_begin (&iter_device);
-	     ds_device_iter_has_more (&iter_device);
-	     ds_device_iter_next (&iter_device)) {
-		device = ds_device_iter_get (&iter_device);
+	info.capability = capability;
+	info.iter = &iter_array;
 
-		if (!device->in_gdl)
-			continue;
-
-		type = ds_property_get_type (device, "info.capabilities");
-		if (type == DBUS_TYPE_STRING) {
-			if (strstr
-			    (ds_property_get_string
-			     (device, "info.capabilities"),
-			     capability) != NULL)
-				dbus_message_iter_append_string
-				    (&iter_array, device->udi);
-		}
-	}
+	hal_device_store_foreach (hald_get_gdl (),
+				  foreach_device_by_capability,
+				  &info);
 
 	if (!dbus_connection_send (connection, reply, NULL))
 		DIE (("No memory"));
@@ -417,7 +421,7 @@ manager_find_device_by_capability (DBusConnection * connection,
  *  @param  message             Message
  *  @return                     What to do with the message
  */
-static DBusHandlerResult
+DBusHandlerResult
 manager_device_exists (DBusConnection * connection, DBusMessage * message)
 {
 	DBusMessage *reply;
@@ -436,7 +440,7 @@ manager_device_exists (DBusConnection * connection, DBusMessage * message)
 
 	HAL_TRACE (("entering, udi=%s", udi));
 
-	d = ds_device_find (udi);
+	d = hal_device_store_find (hald_get_gdl (), udi);
 
 	reply = dbus_message_new_method_return (message);
 	dbus_message_iter_init (reply, &iter);
@@ -455,11 +459,12 @@ manager_device_exists (DBusConnection * connection, DBusMessage * message)
 /** Send signal DeviceAdded(string udi) on the org.freedesktop.Hal.Manager
  *  interface on the object /org/freedesktop/Hal/Manager.
  *
- *  @param  udi                 Unique Device Id
+ *  @param  device              The HalDevice added
  */
-static void
-manager_send_signal_device_added (const char *udi)
+void
+manager_send_signal_device_added (HalDevice *device)
 {
+	const char *udi = hal_device_get_udi (device);
 	DBusMessage *message;
 	DBusMessageIter iter;
 
@@ -481,11 +486,12 @@ manager_send_signal_device_added (const char *udi)
 /** Send signal DeviceRemoved(string udi) on the org.freedesktop.Hal.Manager
  *  interface on the object /org/freedesktop/Hal/Manager.
  *
- *  @param  udi                 Unique Device Id
+ *  @param  device              The HalDevice removed
  */
-static void
-manager_send_signal_device_removed (const char *udi)
+void
+manager_send_signal_device_removed (HalDevice *device)
 {
+	const char *udi = hal_device_get_udi (device);
 	DBusMessage *message;
 	DBusMessageIter iter;
 
@@ -511,10 +517,11 @@ manager_send_signal_device_removed (const char *udi)
  *  @param  udi                 Unique Device Id
  *  @param  capability          Capability
  */
-static void
-manager_send_signal_new_capability (const char *udi,
+void
+manager_send_signal_new_capability (HalDevice *device,
 				    const char *capability)
 {
+	const char *udi = hal_device_get_udi (device);
 	DBusMessage *message;
 	DBusMessageIter iter;
 
@@ -543,6 +550,47 @@ manager_send_signal_new_capability (const char *udi,
  * @{
  */
 
+static gboolean
+foreach_property_append (HalDevice *device, HalProperty *p,
+			 gpointer user_data)
+{
+	DBusMessageIter *iter = user_data;
+	const char *key;
+	int type;
+
+	key = hal_property_get_key (p);
+	type = hal_property_get_type (p);
+
+	dbus_message_iter_append_dict_key (iter, key);
+
+	switch (type) {
+	case DBUS_TYPE_STRING:
+		dbus_message_iter_append_string (iter,
+						 hal_property_get_string (p));
+		break;
+	case DBUS_TYPE_INT32:
+		dbus_message_iter_append_int32 (iter,
+						hal_property_get_int (p));
+		break;
+	case DBUS_TYPE_DOUBLE:
+		dbus_message_iter_append_double (iter,
+						 hal_property_get_double (p));
+		break;
+	case DBUS_TYPE_BOOLEAN:
+		dbus_message_iter_append_boolean (iter,
+						  hal_property_get_bool (p));
+		break;
+		
+	default:
+		HAL_WARNING (("Unknown property type %d", type));
+		break;
+	}
+
+	return TRUE;
+}
+		
+	
+	
 /** Get all properties on a device.
  *
  *  <pre>
@@ -555,7 +603,7 @@ manager_send_signal_new_capability (const char *udi,
  *  @param  message             Message
  *  @return                     What to do with the message
  */
-static DBusHandlerResult
+DBusHandlerResult
 device_get_all_properties (DBusConnection * connection,
 			   DBusMessage * message)
 {
@@ -564,13 +612,12 @@ device_get_all_properties (DBusConnection * connection,
 	DBusMessageIter iter_dict;
 	HalDevice *d;
 	const char *udi;
-	HalPropertyIterator iter_prop;
 
 	udi = dbus_message_get_path (message);
 
-	/*HAL_TRACE (("entering, udi=%s", udi));*/
+	HAL_TRACE (("entering, udi=%s", udi));
 
-	d = ds_device_find (udi);
+	d = hal_device_store_find (hald_get_gdl (), udi);
 	if (d == NULL) {
 		raise_no_such_device (connection, message, udi);
 		return DBUS_HANDLER_RESULT_NOT_YET_HANDLED;
@@ -583,46 +630,9 @@ device_get_all_properties (DBusConnection * connection,
 	dbus_message_iter_init (reply, &iter);
 	dbus_message_iter_append_dict (&iter, &iter_dict);
 
-	for (ds_property_iter_begin (d, &iter_prop);
-	     ds_property_iter_has_more (&iter_prop);
-	     ds_property_iter_next (&iter_prop)) {
-		int type;
-		HalProperty *p;
-		const char *key;
-
-		p = ds_property_iter_get (&iter_prop);
-		key = ds_property_iter_get_key (p);
-		type = ds_property_iter_get_type (p);
-
-		dbus_message_iter_append_dict_key (&iter_dict, key);
-
-		switch (type) {
-		case DBUS_TYPE_STRING:
-			dbus_message_iter_append_string 
-				(&iter_dict,
-				 ds_property_iter_get_string (p));
-			break;
-		case DBUS_TYPE_INT32:
-			dbus_message_iter_append_int32 
-				(&iter_dict,
-				 ds_property_iter_get_int (p));
-			break;
-		case DBUS_TYPE_DOUBLE:
-			dbus_message_iter_append_double (
-				&iter_dict,
-				ds_property_iter_get_double (p));
-			break;
-		case DBUS_TYPE_BOOLEAN:
-			dbus_message_iter_append_boolean 
-				(&iter_dict,
-				 ds_property_iter_get_bool (p));
-			break;
-
-		default:
-			HAL_WARNING (("Unknown property type %d", type));
-			break;
-		}
-	}
+	hal_device_property_foreach (d,
+				     foreach_property_append,
+				     &iter_dict);
 
 	if (!dbus_connection_send (connection, reply, NULL))
 		DIE (("No memory"));
@@ -650,7 +660,7 @@ device_get_all_properties (DBusConnection * connection,
  *  @param  message             Message
  *  @return                     What to do with the message
  */
-static DBusHandlerResult
+DBusHandlerResult
 device_get_property (DBusConnection * connection, DBusMessage * message)
 {
 	DBusMessage *reply;
@@ -666,7 +676,7 @@ device_get_property (DBusConnection * connection, DBusMessage * message)
 
 	HAL_TRACE (("entering, udi=%s", udi));
 
-	d = ds_device_find (udi);
+	d = hal_device_store_find (hald_get_gdl (), udi);
 	if (d == NULL) {
 		raise_no_such_device (connection, message, udi);
 		return DBUS_HANDLER_RESULT_NOT_YET_HANDLED;
@@ -680,7 +690,7 @@ device_get_property (DBusConnection * connection, DBusMessage * message)
 		return DBUS_HANDLER_RESULT_NOT_YET_HANDLED;
 	}
 
-	p = ds_property_find (d, key);
+	p = hal_device_property_find (d, key);
 	if (p == NULL) {
 		raise_no_such_property (connection, message, udi, key);
 		return DBUS_HANDLER_RESULT_NOT_YET_HANDLED;
@@ -692,27 +702,23 @@ device_get_property (DBusConnection * connection, DBusMessage * message)
 
 	dbus_message_iter_init (reply, &iter);
 
-	type = ds_property_iter_get_type (p);
+	type = hal_property_get_type (p);
 	switch (type) {
 	case DBUS_TYPE_STRING:
 		dbus_message_iter_append_string (&iter,
-						 ds_property_iter_get_string
-						 (p));
+						 hal_property_get_string (p));
 		break;
 	case DBUS_TYPE_INT32:
 		dbus_message_iter_append_int32 (&iter,
-						ds_property_iter_get_int
-						(p));
+						hal_property_get_int (p));
 		break;
 	case DBUS_TYPE_DOUBLE:
 		dbus_message_iter_append_double (&iter,
-						 ds_property_iter_get_double
-						 (p));
+						 hal_property_get_double (p));
 		break;
 	case DBUS_TYPE_BOOLEAN:
 		dbus_message_iter_append_boolean (&iter,
-						  ds_property_iter_get_bool
-						  (p));
+						  hal_property_get_bool (p));
 		break;
 
 	default:
@@ -742,7 +748,7 @@ device_get_property (DBusConnection * connection, DBusMessage * message)
  *  @param  message             Message
  *  @return                     What to do with the message
  */
-static DBusHandlerResult
+DBusHandlerResult
 device_get_property_type (DBusConnection * connection,
 			  DBusMessage * message)
 {
@@ -758,7 +764,7 @@ device_get_property_type (DBusConnection * connection,
 
 	HAL_TRACE (("entering, udi=%s", udi));
 
-	d = ds_device_find (udi);
+	d = hal_device_store_find (hald_get_gdl (), udi);
 	if (d == NULL) {
 		raise_no_such_device (connection, message, udi);
 		return DBUS_HANDLER_RESULT_NOT_YET_HANDLED;
@@ -772,7 +778,7 @@ device_get_property_type (DBusConnection * connection,
 		return DBUS_HANDLER_RESULT_NOT_YET_HANDLED;
 	}
 
-	p = ds_property_find (d, key);
+	p = hal_device_property_find (d, key);
 	if (p == NULL) {
 		raise_no_such_property (connection, message, udi, key);
 		return DBUS_HANDLER_RESULT_NOT_YET_HANDLED;
@@ -784,7 +790,7 @@ device_get_property_type (DBusConnection * connection,
 
 	dbus_message_iter_init (reply, &iter);
 	dbus_message_iter_append_int32 (&iter,
-					ds_property_iter_get_type (p));
+					hal_property_get_type (p));
 
 	if (!dbus_connection_send (connection, reply, NULL))
 		DIE (("No memory"));
@@ -814,7 +820,7 @@ device_get_property_type (DBusConnection * connection,
  *  @param  message             Message
  *  @return                     What to do with the message
  */
-static DBusHandlerResult
+DBusHandlerResult
 device_set_property (DBusConnection * connection, DBusMessage * message)
 {
 	const char *udi;
@@ -839,7 +845,7 @@ device_set_property (DBusConnection * connection, DBusMessage * message)
 
 	HAL_DEBUG (("udi=%s, key=%s", udi, key));
 
-	device = ds_device_find (udi);
+	device = hal_device_store_find (hald_get_gdl (), udi);
 	if (device == NULL) {
 		raise_no_such_device (connection, message, udi);
 		return DBUS_HANDLER_RESULT_NOT_YET_HANDLED;
@@ -852,22 +858,22 @@ device_set_property (DBusConnection * connection, DBusMessage * message)
 	rc = FALSE;
 	switch (type) {
 	case DBUS_TYPE_STRING:
-		rc = ds_property_set_string (device, key,
+		rc = hal_device_property_set_string (device, key,
 					     dbus_message_iter_get_string
 					     (&iter));
 		break;
 	case DBUS_TYPE_INT32:
-		rc = ds_property_set_int (device, key,
+		rc = hal_device_property_set_int (device, key,
 					  dbus_message_iter_get_int32
 					  (&iter));
 		break;
 	case DBUS_TYPE_DOUBLE:
-		rc = ds_property_set_double (device, key,
+		rc = hal_device_property_set_double (device, key,
 					     dbus_message_iter_get_double
 					     (&iter));
 		break;
 	case DBUS_TYPE_BOOLEAN:
-		rc = ds_property_set_bool (device, key,
+		rc = hal_device_property_set_bool (device, key,
 					   dbus_message_iter_get_boolean
 					   (&iter));
 		break;
@@ -923,7 +929,7 @@ device_set_property (DBusConnection * connection, DBusMessage * message)
  *  @param  message             Message
  *  @return                     What to do with the message
  */
-static DBusHandlerResult
+DBusHandlerResult
 device_add_capability (DBusConnection * connection, DBusMessage * message)
 {
 	const char *udi;
@@ -938,7 +944,7 @@ device_add_capability (DBusConnection * connection, DBusMessage * message)
 
 	udi = dbus_message_get_path (message);
 
-	d = ds_device_find (udi);
+	d = hal_device_store_find (hald_get_gdl (), udi);
 	if (d == NULL) {
 		raise_no_such_device (connection, message, udi);
 		return DBUS_HANDLER_RESULT_NOT_YET_HANDLED;
@@ -953,23 +959,20 @@ device_add_capability (DBusConnection * connection, DBusMessage * message)
 	}
 
 
-	caps = ds_property_get_string (d, "info.capabilities");
+	caps = hal_device_property_get_string (d, "info.capabilities");
 	if (caps == NULL) {
-		ds_property_set_string (d, "info.capabilities",
+		hal_device_property_set_string (d, "info.capabilities",
 					capability);
 	} else {
 		if (strstr (caps, capability) == NULL) {
 			snprintf (buf, MAX_CAP_SIZE, "%s %s", caps,
 				  capability);
-			ds_property_set_string (d, "info.capabilities",
+			hal_device_property_set_string (d, "info.capabilities",
 						buf);
 		}
 	}
 
-	if (d->in_gdl) {
-		manager_send_signal_new_capability (udi, capability);
-	}
-
+	manager_send_signal_new_capability (udi, capability);
 
 	reply = dbus_message_new_method_return (message);
 	if (reply == NULL)
@@ -997,7 +1000,7 @@ device_add_capability (DBusConnection * connection, DBusMessage * message)
  *  @param  message             Message
  *  @return                     What to do with the message
  */
-static DBusHandlerResult
+DBusHandlerResult
 device_remove_property (DBusConnection * connection, DBusMessage * message)
 {
 	const char *udi;
@@ -1010,7 +1013,7 @@ device_remove_property (DBusConnection * connection, DBusMessage * message)
 
 	udi = dbus_message_get_path (message);
 
-	d = ds_device_find (udi);
+	d = hal_device_store_find (hald_get_gdl (), udi);
 	if (d == NULL) {
 		raise_no_such_device (connection, message, udi);
 		return DBUS_HANDLER_RESULT_NOT_YET_HANDLED;
@@ -1024,7 +1027,7 @@ device_remove_property (DBusConnection * connection, DBusMessage * message)
 		return DBUS_HANDLER_RESULT_NOT_YET_HANDLED;
 	}
 
-	if (!ds_property_remove (d, key)) {
+	if (!hal_device_property_remove (d, key)) {
 		raise_no_such_property (connection, message, udi, key);
 		return DBUS_HANDLER_RESULT_NOT_YET_HANDLED;
 	}
@@ -1054,7 +1057,7 @@ device_remove_property (DBusConnection * connection, DBusMessage * message)
  *  @param  message             Message
  *  @return                     What to do with the message
  */
-static DBusHandlerResult
+DBusHandlerResult
 device_property_exists (DBusConnection * connection, DBusMessage * message)
 {
 	const char *udi;
@@ -1068,7 +1071,7 @@ device_property_exists (DBusConnection * connection, DBusMessage * message)
 
 	udi = dbus_message_get_path (message);
 
-	d = ds_device_find (udi);
+	d = hal_device_store_find (hald_get_gdl (), udi);
 	if (d == NULL) {
 		raise_no_such_device (connection, message, udi);
 		return DBUS_HANDLER_RESULT_NOT_YET_HANDLED;
@@ -1088,7 +1091,7 @@ device_property_exists (DBusConnection * connection, DBusMessage * message)
 
 	dbus_message_iter_init (reply, &iter);
 	dbus_message_iter_append_boolean (&iter,
-					  ds_property_exists (d, key));
+					  hal_device_has_property (d, key));
 
 	if (!dbus_connection_send (connection, reply, NULL))
 		DIE (("No memory"));
@@ -1110,7 +1113,7 @@ device_property_exists (DBusConnection * connection, DBusMessage * message)
  *  @param  message             Message
  *  @return                     What to do with the message
  */
-static DBusHandlerResult
+DBusHandlerResult
 device_query_capability (DBusConnection * connection,
 			 DBusMessage * message)
 {
@@ -1127,7 +1130,7 @@ device_query_capability (DBusConnection * connection,
 
 	udi = dbus_message_get_path (message);
 
-	d = ds_device_find (udi);
+	d = hal_device_store_find (hald_get_gdl (), udi);
 	if (d == NULL) {
 		raise_no_such_device (connection, message, udi);
 		return DBUS_HANDLER_RESULT_NOT_YET_HANDLED;
@@ -1146,7 +1149,7 @@ device_query_capability (DBusConnection * connection,
 		DIE (("No memory"));
 
 	rc = FALSE;
-	caps = ds_property_get_string (d, "info.capabilities");
+	caps = hal_device_property_get_string (d, "info.capabilities");
 	if (caps != NULL) {
 		if (strstr (caps, capability) != NULL)
 			rc = TRUE;
@@ -1161,6 +1164,211 @@ device_query_capability (DBusConnection * connection,
 	dbus_message_unref (reply);
 	return DBUS_HANDLER_RESULT_NOT_YET_HANDLED;
 }
+
+/** Counter for atomic updating */
+static int atomic_count = 0;
+
+/** Number of updates pending */
+static int num_pending_updates = 0;
+
+/** Structure for queing updates */
+typedef struct PendingUpdate_s {
+	char *udi;                    /**< udi of device */
+	char *key;                    /**< key of property; free when done */
+	dbus_bool_t removed;          /**< true iff property was removed */
+	dbus_bool_t added;            /**< true iff property was added */
+	struct PendingUpdate_s *next; /**< next update or #NULL */
+} PendingUpdate;
+
+static PendingUpdate *pending_updates_head = NULL;
+
+/** Begin an atomic update - this is useful for updating several properties
+ *  in one go.
+ *
+ *  Note that an atomic update is recursive - use with caution!
+ */
+void
+device_property_atomic_update_begin (void)
+{
+	atomic_count++;
+}
+
+/** End an atomic update.
+ *
+ *  Note that an atomic update is recursive - use with caution!
+ */
+void
+device_property_atomic_update_end (void)
+{
+	PendingUpdate *pu_iter = NULL;
+	PendingUpdate *pu_iter_next = NULL;
+	PendingUpdate *pu_iter2 = NULL;
+
+	--atomic_count;
+
+	if (atomic_count < 0) {
+		HAL_WARNING (("*** atomic_count = %d < 0 !!",
+			      atomic_count));
+		atomic_count = 0;
+	}
+
+	if (atomic_count == 0 && num_pending_updates > 0) {
+		DBusMessage *message;
+		DBusMessageIter iter;
+
+		for (pu_iter = pending_updates_head;
+		     pu_iter != NULL; pu_iter = pu_iter_next) {
+			int num_updates_this;
+
+			pu_iter_next = pu_iter->next;
+
+			if (pu_iter->udi == NULL)
+				goto have_processed;
+
+			/* count number of updates for this device */
+			num_updates_this = 0;
+			for (pu_iter2 = pu_iter;
+			     pu_iter2 != NULL; pu_iter2 = pu_iter2->next) {
+				if (strcmp (pu_iter2->udi, pu_iter->udi) == 0)
+					num_updates_this++;
+			}
+
+			/* prepare message */
+			message = dbus_message_new_signal (
+				pu_iter->udi,
+				"org.freedesktop.Hal.Device",
+				"PropertyModified");
+			dbus_message_iter_init (message, &iter);
+			dbus_message_iter_append_int32 (&iter,
+							num_updates_this);
+			for (pu_iter2 = pu_iter; pu_iter2 != NULL;
+			     pu_iter2 = pu_iter2->next) {
+				if (strcmp (pu_iter2->udi, pu_iter->udi) == 0) {
+					dbus_message_iter_append_string
+					    (&iter, pu_iter2->key);
+					dbus_message_iter_append_boolean
+					    (&iter, pu_iter2->removed);
+					dbus_message_iter_append_boolean
+					    (&iter, pu_iter2->added);
+
+					/* signal this is already processed */
+					if (pu_iter2 != pu_iter) {
+						g_free (pu_iter2->udi);
+						pu_iter2->udi = NULL;
+					}
+				}
+			}
+
+
+			if (!dbus_connection_send
+			    (dbus_connection, message, NULL))
+				DIE (("error broadcasting message"));
+
+			dbus_message_unref (message);
+
+		      have_processed:
+			g_free (pu_iter->key);
+			g_free (pu_iter);
+		}		/* for all updates */
+
+		num_pending_updates = 0;
+		pending_updates_head = NULL;
+	}
+}
+
+
+
+void
+device_send_signal_property_modified (HalDevice *device, const char *key,
+				      dbus_bool_t added, dbus_bool_t removed)
+{
+	const char *udi = hal_device_get_udi (device);
+	DBusMessage *message;
+	DBusMessageIter iter;
+
+/*
+    HAL_INFO(("Entering, udi=%s, key=%s, in_gdl=%s, removed=%s added=%s",
+              device->udi, key, 
+              in_gdl ? "true" : "false",
+              removed ? "true" : "false",
+              added ? "true" : "false"));
+*/
+
+	if (atomic_count > 0) {
+		PendingUpdate *pu;
+
+		pu = g_new0 (PendingUpdate, 1);
+		pu->udi = g_strdup (udi);
+		pu->key = g_strdup (key);
+		pu->removed = removed;
+		pu->added = added;
+		pu->next = pending_updates_head;
+
+		pending_updates_head = pu;
+		num_pending_updates++;
+	} else {
+		message = dbus_message_new_signal (udi,
+						  "org.freedesktop.Hal.Device",
+						   "PropertyModified");
+
+		dbus_message_iter_init (message, &iter);
+		dbus_message_iter_append_int32 (&iter, 1);
+		dbus_message_iter_append_string (&iter, key);
+		dbus_message_iter_append_boolean (&iter, removed);
+		dbus_message_iter_append_boolean (&iter, added);
+
+		if (!dbus_connection_send (dbus_connection, message, NULL))
+			DIE (("error broadcasting message"));
+
+		dbus_message_unref (message);
+	}
+}
+
+/** Emits a condition on a device; the device has to be in the GDL for
+ *  this function to have effect.
+ *
+ *  Is intended for non-continuous events on the device like
+ *  ProcesserOverheating, BlockDeviceGotDevice, e.g. conditions that
+ *  are exceptional and may not be inferred by looking at properties
+ *  (though some may).
+ *
+ *  This function accepts a number of parameters that are passed along
+ *  in the D-BUS message. The recipient is supposed to extract the parameters
+ *  himself, by looking at the HAL specification.
+ *
+ * @param  udi                  The UDI for this device
+ * @param  condition_name       Name of condition
+ * @param  first_arg_type       Type of the first argument
+ * @param  ...                  value of first argument, list of additional
+ *                              type-value pairs. Must be terminated with
+ *                              DBUS_TYPE_INVALID
+ */
+void
+device_send_signal_condition (HalDevice *device, const char *condition_name,
+			      int first_arg_type, ...)
+{
+	const char *udi = hal_device_get_udi (device);
+	DBusMessage *message;
+	DBusMessageIter iter;
+	va_list var_args;
+
+	message = dbus_message_new_signal (udi,
+					   "org.freedesktop.Hal.Device",
+					   "Condition");
+	dbus_message_iter_init (message, &iter);
+	dbus_message_iter_append_string (&iter, condition_name);
+
+	va_start (var_args, first_arg_type);
+	dbus_message_append_args_valist (message, first_arg_type,
+					 var_args);
+	va_end (var_args);
+
+	if (!dbus_connection_send (dbus_connection, message, NULL))
+		DIE (("error broadcasting message"));
+
+	dbus_message_unref (message);
+}
+
 
 
 /** @} */
@@ -1186,7 +1394,7 @@ device_query_capability (DBusConnection * connection,
  *  @param  message             Message
  *  @return                     What to do with the message
  */
-static DBusHandlerResult
+DBusHandlerResult
 agent_manager_new_device (DBusConnection * connection,
 			  DBusMessage * message)
 {
@@ -1201,8 +1409,8 @@ agent_manager_new_device (DBusConnection * connection,
 	if (reply == NULL)
 		DIE (("No memory"));
 
-	d = ds_device_new ();
-	udi = ds_device_get_udi (d);
+	d = hal_device_new ();
+	udi = hal_device_get_udi (d);
 
 	HAL_TRACE (("udi=%s", udi));
 
@@ -1239,7 +1447,7 @@ agent_manager_new_device (DBusConnection * connection,
  *  @param  message             Message
  *  @return                     What to do with the message
  */
-static DBusHandlerResult
+DBusHandlerResult
 agent_manager_commit_to_gdl (DBusConnection * connection,
 			     DBusMessage * message)
 {
@@ -1260,19 +1468,19 @@ agent_manager_commit_to_gdl (DBusConnection * connection,
 
 	HAL_TRACE (("entering, old_udi=%s, new_udi=%s", old_udi, new_udi));
 
-	d = ds_device_find (old_udi);
+	d = hal_device_store_find (hald_get_gdl (), old_udi);
 	if (d == NULL) {
 		raise_no_such_device (connection, message, old_udi);
 		return DBUS_HANDLER_RESULT_NOT_YET_HANDLED;
 	}
 
-	if (!ds_device_set_udi (d, new_udi)) {
+	if (hal_device_store_find (hald_get_gdl (), new_udi) != NULL) {
 		raise_udi_in_use (connection, message, new_udi);
 		return DBUS_HANDLER_RESULT_NOT_YET_HANDLED;
 	}
 
 	/* add to the GDL */
-	ds_gdl_add (d);
+	hal_device_store_add (hald_get_gdl (), d);
 
 	/* Ok, send out a signal on the Manager interface that we added
 	 * this device to the gdl */
@@ -1306,7 +1514,7 @@ agent_manager_commit_to_gdl (DBusConnection * connection,
  *  @param  message             Message
  *  @return                     What to do with the message
  */
-static DBusHandlerResult
+DBusHandlerResult
 agent_manager_remove (DBusConnection * connection, DBusMessage * message)
 {
 	DBusMessage *reply;
@@ -1324,13 +1532,13 @@ agent_manager_remove (DBusConnection * connection, DBusMessage * message)
 
 	HAL_INFO (("entering, udi=%s", udi));
 
-	d = ds_device_find (udi);
+	d = hal_device_store_find (hald_get_gdl (), udi);
 	if (d == NULL) {
 		raise_no_such_device (connection, message, udi);
 		return DBUS_HANDLER_RESULT_NOT_YET_HANDLED;
 	}
 
-	ds_device_destroy (d);
+	g_object_unref (d);
 
 	/* Ok, send out a signal on the Manager interface that we removed
 	 * this device from the gdl */
@@ -1364,7 +1572,7 @@ agent_manager_remove (DBusConnection * connection, DBusMessage * message)
  *  @param  message             Message
  *  @return                     What to do with the message
  */
-static DBusHandlerResult
+DBusHandlerResult
 agent_merge_properties (DBusConnection * connection, DBusMessage * message)
 {
 	DBusMessage *reply;
@@ -1386,19 +1594,19 @@ agent_merge_properties (DBusConnection * connection, DBusMessage * message)
 	HAL_TRACE (("entering, target_udi=%s, source_udi=%s",
 		    target_udi, source_udi));
 
-	target_d = ds_device_find (target_udi);
+	target_d = hal_device_store_find (hald_get_gdl (), target_udi);
 	if (target_d == NULL) {
 		raise_no_such_device (connection, message, target_udi);
 		return DBUS_HANDLER_RESULT_NOT_YET_HANDLED;
 	}
 
-	source_d = ds_device_find (source_udi);
+	source_d = hal_device_store_find (hald_get_gdl (), source_udi);
 	if (source_d == NULL) {
 		raise_no_such_device (connection, message, source_udi);
 		return DBUS_HANDLER_RESULT_NOT_YET_HANDLED;
 	}
 
-	ds_device_merge (target_d, source_d);
+	hal_device_merge (target_d, source_d);
 
 	reply = dbus_message_new_method_return (message);
 	if (reply == NULL)
@@ -1434,7 +1642,7 @@ agent_merge_properties (DBusConnection * connection, DBusMessage * message)
  *  @param  message             Message
  *  @return                     What to do with the message
  */
-static DBusHandlerResult
+DBusHandlerResult
 agent_device_matches (DBusConnection * connection, DBusMessage * message)
 {
 	DBusMessage *reply;
@@ -1460,19 +1668,19 @@ agent_device_matches (DBusConnection * connection, DBusMessage * message)
 	HAL_TRACE (("entering, udi1=%s, udi2=%s, namespace=%s",
 		    udi1, udi2, namespace));
 
-	d1 = ds_device_find (udi1);
+	d1 = hal_device_store_find (hald_get_gdl (), udi1);
 	if (d1 == NULL) {
 		raise_no_such_device (connection, message, udi1);
 		return DBUS_HANDLER_RESULT_NOT_YET_HANDLED;
 	}
 
-	d2 = ds_device_find (udi2);
+	d2 = hal_device_store_find (hald_get_gdl (), udi2);
 	if (d2 == NULL) {
 		raise_no_such_device (connection, message, udi2);
 		return DBUS_HANDLER_RESULT_NOT_YET_HANDLED;
 	}
 
-	rc = ds_device_matches (d1, d2, namespace);
+	rc = hal_device_matches (d1, d2, namespace);
 
 	reply = dbus_message_new_method_return (message);
 	if (reply == NULL)
@@ -1487,18 +1695,6 @@ agent_device_matches (DBusConnection * connection, DBusMessage * message)
 	dbus_message_unref (reply);
 	return DBUS_HANDLER_RESULT_NOT_YET_HANDLED;
 }
-
-
-/** @} */
-
-
-/**
- * @defgroup MainDaemon Basic functions
- * @ingroup HalDaemon
- * @brief Basic functions in the HAL daemon
- * @{
- */
-
 
 /** Message handler for method invocations. All invocations on any object
  *  or interface is routed through this function.
@@ -1651,428 +1847,17 @@ filter_function (DBusConnection * connection,
 	return DBUS_HANDLER_RESULT_NOT_YET_HANDLED;
 }
 
-/** Counter for atomic updating */
-static int atomic_count = 0;
-
-/** Begin an atomic update - this is useful for updating several properties
- *  in one go.
- *
- *  Note that an atomic update is recursive - use with caution!
- */
-void
-property_atomic_update_begin ()
+DBusConnection *
+hald_dbus_init (void)
 {
-	atomic_count++;
-}
-
-/** Number of updates pending */
-static int num_pending_updates = 0;
-
-/** Structure for queing updates */
-typedef struct PendingUpdate_s {
-	HalDevice *device;            /**< pointer to device */
-	char *key;                    /**< key of property; free when done */
-	dbus_bool_t removed;          /**< true iff property was removed */
-	dbus_bool_t added;            /**< true iff property was added */
-	struct PendingUpdate_s *next; /**< next update or #NULL */
-} PendingUpdate;
-
-static PendingUpdate *pending_updates_head = NULL;
-
-/** End an atomic update.
- *
- *  Note that an atomic update is recursive - use with caution!
- */
-void
-property_atomic_update_end ()
-{
-	PendingUpdate *pu_iter = NULL;
-	PendingUpdate *pu_iter_next = NULL;
-	PendingUpdate *pu_iter2 = NULL;
-
-	--atomic_count;
-
-	if (atomic_count < 0) {
-		HAL_WARNING (("*** atomic_count = %d < 0 !!",
-			      atomic_count));
-		atomic_count = 0;
-	}
-
-	if (atomic_count == 0 && num_pending_updates > 0) {
-		DBusMessage *message;
-		DBusMessageIter iter;
-
-		for (pu_iter = pending_updates_head;
-		     pu_iter != NULL; pu_iter = pu_iter_next) {
-			int num_updates_this;
-
-			pu_iter_next = pu_iter->next;
-
-			if (pu_iter->device == NULL)
-				goto have_processed;
-
-			/* count number of updates for this device */
-			num_updates_this = 0;
-			for (pu_iter2 = pu_iter;
-			     pu_iter2 != NULL; pu_iter2 = pu_iter2->next) {
-				if (pu_iter2->device == pu_iter->device)
-					num_updates_this++;
-			}
-
-			/* prepare message */
-			message =
-			    dbus_message_new_signal 
-				(pu_iter->device->udi,
-				 "org.freedesktop.Hal.Device",
-				 "PropertyModified");
-			dbus_message_iter_init (message, &iter);
-			dbus_message_iter_append_int32 (&iter,
-							num_updates_this);
-			for (pu_iter2 = pu_iter; pu_iter2 != NULL;
-			     pu_iter2 = pu_iter2->next) {
-				if (pu_iter2->device == pu_iter->device) {
-					dbus_message_iter_append_string
-					    (&iter, pu_iter2->key);
-					dbus_message_iter_append_boolean
-					    (&iter, pu_iter2->removed);
-					dbus_message_iter_append_boolean
-					    (&iter, pu_iter2->added);
-
-					/* signal this is already processed */
-					if (pu_iter2 != pu_iter)
-						pu_iter2->device = NULL;
-				}
-			}
-
-
-			if (!dbus_connection_send(dbus_connection, message, NULL))
-				DIE (("error broadcasting message"));
-
-
-			dbus_message_unref (message);
-
-		      have_processed:
-			free (pu_iter->key);
-			free (pu_iter);
-		}		/* for all updates */
-
-		num_pending_updates = 0;
-		pending_updates_head = NULL;
-	}
-}
-
-/** Emits a condition on a device; the device has to be in the GDL for
- *  this function to have effect.
- *
- *  Is intended for non-continuous events on the device like
- *  ProcesserOverheating, BlockDeviceGotDevice, e.g. conditions that
- *  are exceptional and may not be inferred by looking at properties
- *  (though some may).
- *
- *  This function accepts a number of parameters that are passed along
- *  in the D-BUS message. The recipient is supposed to extract the parameters
- *  himself, by looking at the HAL specification.
- *
- * @param  device               The device
- * @param  condition_name       Name of condition
- * @param  first_arg_type       Type of the first argument
- * @param  ...                  value of first argument, list of additional
- *                              type-value pairs. Must be terminated with
- *                              DBUS_TYPE_INVALID
- */
-void
-emit_condition (HalDevice * device, const char *condition_name,
-		int first_arg_type, ...)
-{
-	DBusMessage *message;
-	DBusMessageIter iter;
-	va_list var_args;
-
-	if (!device->in_gdl)
-		return;
-
-	message = dbus_message_new_signal (device->udi,
-					   "org.freedesktop.Hal.Device",
-					   "Condition");
-	dbus_message_iter_init (message, &iter);
-	dbus_message_iter_append_string (&iter, condition_name);
-
-	va_start (var_args, first_arg_type);
-	dbus_message_append_args_valist (message, first_arg_type,
-					 var_args);
-	va_end (var_args);
-
-	if (!dbus_connection_send (dbus_connection, message, NULL))
-		DIE (("error broadcasting message"));
-
-	dbus_message_unref (message);
-}
-
-/** Function in the HAL daemon that is called whenever a property on a device
- *  is changed. Will broadcast the changes using D-BUS signals.
- *
- *  @param  device              #HalDevice object
- *  @param  key                 Property that has changed
- *  @param  in_gdl              True iff the device object in visible in the
- *                              global device list
- *  @param  removed             True iff the property was removed
- *  @param  added               True iff the property was added
- */
-static void
-property_changed (HalDevice * device,
-		  const char *key,
-		  dbus_bool_t in_gdl,
-		  dbus_bool_t removed, dbus_bool_t added)
-{
-	DBusMessage *message;
-	DBusMessageIter iter;
-
-	if (!in_gdl)
-		return;
-
-	HAL_TRACE (("Entering, udi='%s', key='%s' %d, removed=%s added=%s",
-		    device->udi, key, strlen(key),
-		    removed ? "true" : "false",
-		    added ? "true" : "false"));
-
-	if (atomic_count > 0) {
-		PendingUpdate *pu;
-
-		pu = xmalloc (sizeof (PendingUpdate));
-		pu->device = device;
-		pu->key = xstrdup (key);
-		pu->removed = removed;
-		pu->added = added;
-		pu->next = pending_updates_head;
-
-		pending_updates_head = pu;
-		num_pending_updates++;
-	} else {
-		message = dbus_message_new_signal (device->udi,
-						  "org.freedesktop.Hal.Device",
-						   "PropertyModified");
-
-		dbus_message_iter_init (message, &iter);
-		dbus_message_iter_append_int32 (&iter, 1);
-		dbus_message_iter_append_string (&iter, key);
-		dbus_message_iter_append_boolean (&iter, removed);
-		dbus_message_iter_append_boolean (&iter, added);
-
-		if (!dbus_connection_send (dbus_connection, message, NULL))
-			DIE (("error broadcasting message"));
-
-		dbus_message_unref (message);
-	}
-}
-
-/** Callback for the global device list has changed
- *
- *  @param  device              Pointer a #HalDevice object
- *  @param  is_added            True iff device was added
- */
-static void
-gdl_changed (HalDevice * device, dbus_bool_t is_added)
-{
-	if (is_added)
-		manager_send_signal_device_added (device->udi);
-	else
-		manager_send_signal_device_removed (device->udi);
-}
-
-/** Callback for when a new capability is added to a device.
- *
- *  @param  device              Pointer a #HalDevice object
- *  @param  capability          Capability added
- *  @param  in_gdl              True iff the device object in visible in the
- *                              global device list
- */
-static void
-new_capability (HalDevice * device, const char *capability,
-		dbus_bool_t in_gdl)
-{
-	if (!in_gdl)
-		return;
-
-	manager_send_signal_new_capability (device->udi, capability);
-}
-
-/** Print out program usage.
- *
- */
-static void
-usage ()
-{
-	fprintf (stderr, "\n" "usage : hald [--daemon=yes|no] [--help]\n");
-	fprintf (stderr,
-		 "\n"
-		 "        --daemon=yes|no    Become a daemon\n"
-		 "        --help             Show this information and exit\n"
-		 "\n"
-		 "The HAL daemon detects devices present in the system and provides the\n"
-		 "org.freedesktop.Hal service through D-BUS. The commandline options given\n"
-		 "overrides the configuration given in "
-		 PACKAGE_SYSCONF_DIR "/hald.conf\n" "\n"
-		 "For more information visit http://freedesktop.org/Software/hal\n"
-		 "\n");
-}
-
-
-/** If #TRUE, we will daemonize */
-static dbus_bool_t opt_become_daemon = TRUE;
-
-/** Run as specified username if not #NULL */
-static char *opt_run_as = NULL;
-
-/** Entry point for HAL daemon
- *
- *  @param  argc                Number of arguments
- *  @param  argv                Array of arguments
- *  @return                     Exit code
- */
-int
-main (int argc, char *argv[])
-{
-	GMainLoop *loop;
 	DBusError dbus_error;
-
-	/* We require root to sniff mii registers */
-	/*opt_run_as = HAL_USER; */
-
-	while (1) {
-		int c;
-		int option_index = 0;
-		const char *opt;
-		static struct option long_options[] = {
-			{"daemon", 1, NULL, 0},
-			{"help", 0, NULL, 0},
-			{NULL, 0, NULL, 0}
-		};
-
-		c = getopt_long (argc, argv, "",
-				 long_options, &option_index);
-		if (c == -1)
-			break;
-
-		switch (c) {
-		case 0:
-			opt = long_options[option_index].name;
-
-			if (strcmp (opt, "help") == 0) {
-				usage ();
-				return 0;
-			} else if (strcmp (opt, "daemon") == 0) {
-				if (strcmp ("yes", optarg) == 0) {
-					opt_become_daemon = TRUE;
-				} else if (strcmp ("no", optarg) == 0) {
-					opt_become_daemon = FALSE;
-				} else {
-					usage ();
-					return 1;
-				}
-			}
-			break;
-
-		default:
-			usage ();
-			return 1;
-			break;
-		}
-	}
-
-	logger_init ();
-	HAL_INFO (("HAL daemon version " PACKAGE_VERSION " starting up"));
-
-	HAL_DEBUG (("opt_become_daemon = %d", opt_become_daemon));
-
-	if (opt_become_daemon) {
-		int child_pid;
-		int dev_null_fd;
-
-		if (chdir ("/") < 0) {
-			HAL_ERROR (("Could not chdir to /, errno=%d",
-				    errno));
-			return 1;
-		}
-
-		child_pid = fork ();
-		switch (child_pid) {
-		case -1:
-			HAL_ERROR (("Cannot fork(), errno=%d", errno));
-			break;
-
-		case 0:
-			/* child */
-
-			dev_null_fd = open ("/dev/null", O_RDWR);
-			/* ignore if we can't open /dev/null */
-			if (dev_null_fd > 0) {
-				/* attach /dev/null to stdout, stdin, stderr */
-				dup2 (dev_null_fd, 0);
-				dup2 (dev_null_fd, 1);
-				dup2 (dev_null_fd, 2);
-			}
-
-			umask (022);
-
-			/** @todo FIXME change logger to direct to syslog */
-
-			break;
-
-		default:
-			/* parent */
-			exit (0);
-			break;
-		}
-
-		/* Create session */
-		setsid ();
-	}
-
-	if (opt_run_as != NULL) {
-		uid_t uid;
-		gid_t gid;
-		struct passwd *pw;
-
-
-		if ((pw = getpwnam (opt_run_as)) == NULL) {
-			HAL_ERROR (("Could not lookup user %s, errno=%d",
-				    opt_run_as, errno));
-			exit (1);
-		}
-
-		uid = pw->pw_uid;
-		gid = pw->pw_gid;
-
-		if (setgid (gid) < 0) {
-			HAL_ERROR (("Failed to set GID to %d, errno=%d",
-				    gid, errno));
-			exit (1);
-		}
-
-		if (setuid (uid) < 0) {
-			HAL_ERROR (("Failed to set UID to %d, errno=%d",
-				    uid, errno));
-			exit (1);
-		}
-
-	}
-
-	/* initialize the device store */
-	ds_init ();
-
-	/* add callbacks from device store */
-	ds_add_cb_newcap (new_capability);
-	ds_add_cb_gdl_changed (gdl_changed);
-	ds_add_cb_property_changed (property_changed);
-
-	loop = g_main_loop_new (NULL, FALSE);
 
 	dbus_connection_set_change_sigpipe (TRUE);
 
 	dbus_error_init (&dbus_error);
 	dbus_connection = dbus_bus_get (DBUS_BUS_SYSTEM, &dbus_error);
 	if (dbus_connection == NULL) {
-		HAL_ERROR (("dbus_bus_get(): '%s'", dbus_error.message));
+		HAL_ERROR (("dbus_bus_get(): %s", dbus_error.message));
 		exit (1);
 	}
 
@@ -2081,7 +1866,7 @@ main (int argc, char *argv[])
 	dbus_bus_acquire_service (dbus_connection, "org.freedesktop.Hal",
 				  0, &dbus_error);
 	if (dbus_error_is_set (&dbus_error)) {
-		HAL_ERROR (("dbus_bus_acquire_service(): '%s'",
+		HAL_ERROR (("dbus_bus_acquire_service(): %s",
 			    dbus_error.message));
 		exit (1);
 	}
@@ -2089,43 +1874,7 @@ main (int argc, char *argv[])
 	dbus_connection_add_filter (dbus_connection, filter_function, NULL,
 				    NULL);
 
-	/* initialize operating system specific parts */
-	osspec_init (dbus_connection);
-	/* and detect devices */
-	osspec_probe ();
-
-	/* run the main loop and serve clients */
-	g_main_loop_run (loop);
-
-	return 0;
-}
-
-/** Memory allocation; aborts if no memory.
- *
- *  @param  how_much            Number of bytes to allocated
- *  @return                     Pointer to allocated storage
- */
-void *
-xmalloc (unsigned int how_much)
-{
-	void *p = malloc (how_much);
-	if (!p)
-		DIE (("Unable to allocate %d bytes of memory", how_much));
-	return p;
-}
-
-/** String duplication; aborts if no memory.
- *
- *  @param  how_much            Number of bytes to allocated
- *  @return                     Pointer to allocated storage
- */
-char *
-xstrdup (const char *str)
-{
-	char *p = strdup (str);
-	if (!p)
-		DIE (("Unable to duplicate string '%s'", str));
-	return p;
+	return dbus_connection;
 }
 
 /** @} */

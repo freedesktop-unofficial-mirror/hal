@@ -39,6 +39,8 @@
 
 #include "../logger.h"
 #include "../device_store.h"
+#include "../hald.h"
+
 #include "class_device.h"
 #include "common.h"
 
@@ -71,8 +73,8 @@ input_class_post_process (ClassDeviceHandler *self,
 			  struct sysfs_class_device *class_device)
 {
 	/* add capabilities for device */
-	ds_property_set_string (d, "info.category", "input");
-	ds_add_capability (d, "input");
+	hal_device_property_set_string (d, "info.category", "input");
+	hal_device_add_capability (d, "input");
 
 	/** @todo use some ioctl()'s on the device file (specific by property
 	 *        .target_dev) and set additional properties */
@@ -103,7 +105,7 @@ input_class_get_device_file_target (ClassDeviceHandler *self,
 				    char* dev_file_prop,
 				    int dev_file_prop_len)
 {
-	char *sysfs_name;
+	const char *sysfs_name;
 
 	/* since we have multiple device files for class mouse we need 
 	 * to merge them into different, welldefined, properties */

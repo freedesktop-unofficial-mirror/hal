@@ -41,6 +41,7 @@
 
 #include "../logger.h"
 #include "../device_store.h"
+#include "../hald.h"
 #include "common.h"
 #include "bus_device.h"
 
@@ -96,17 +97,17 @@ bus_device_visit (BusDeviceHandler *self, const char *path,
 */
 
 	/* Construct a new device */
-	d = ds_device_new ();
-	ds_property_set_string (d, "info.bus", self->hal_bus_name);
-	ds_property_set_string (d, "linux.sysfs_path", path);
-	ds_property_set_string (d, "linux.sysfs_path_device", path);
+	d = hal_device_new ();
+	hal_device_property_set_string (d, "info.bus", self->hal_bus_name);
+	hal_device_property_set_string (d, "linux.sysfs_path", path);
+	hal_device_property_set_string (d, "linux.sysfs_path_device", path);
 
 	/** Also set the sysfs path here, because otherwise we can't handle 
 	 *  two identical devices per the algorithm used in a the function
 	 *  rename_and_merge(). The point is that we need something unique 
 	 *  in the bus namespace */
 	snprintf (buf, sizeof(buf), "%s.linux.sysfs_path", self->hal_bus_name);
-	ds_property_set_string (d, buf, path);
+	hal_device_property_set_string (d, buf, path);
 
 	parent_sysfs_path = get_parent_sysfs_path (path);
 
@@ -114,11 +115,19 @@ bus_device_visit (BusDeviceHandler *self, const char *path,
 	 * be added later. If we are probing this can't happen so the
 	 * timeout is set to zero in that event
 	 */
+#if 0
 	ds_device_async_find_by_key_value_string
 	    ("linux.sysfs_path_device", parent_sysfs_path, TRUE,
 	     bus_device_got_parent, 
 	     (void *) d, (void*) self,
 	     is_probing ? 0 : HAL_LINUX_HOTPLUG_TIMEOUT);
+#else
+	bus_device_got_parent (
+		hal_device_store_match_key_value_string (hald_get_gdl (),
+							 "linux.sysfs_path_device",
+							 parent_sysfs_path),
+		d, self);
+#endif
 
 	free (parent_sysfs_path);
 }
@@ -133,7 +142,7 @@ bus_device_visit (BusDeviceHandler *self, const char *path,
 static void
 bus_device_got_parent (HalDevice * parent, void *data1, void *data2)
 {
-	char *sysfs_path = NULL;
+	const char *sysfs_path = NULL;
 	char *new_udi = NULL;
 	HalDevice *new_d = NULL;
 	HalDevice *d = (HalDevice *) data1;
@@ -142,12 +151,12 @@ bus_device_got_parent (HalDevice * parent, void *data1, void *data2)
 
 	/* set parent, if applicable */
 	if (parent != NULL) {
-		ds_property_set_string (d, "info.parent", parent->udi);
+		hal_device_property_set_string (d, "info.parent", parent->udi);
 	}
 
 	/* get more information about the device from the specialised 
 	 * function */
-	sysfs_path = ds_property_get_string (d, "linux.sysfs_path");
+	sysfs_path = hal_device_property_get_string (d, "linux.sysfs_path");
 	assert (sysfs_path != NULL);
 	device = sysfs_open_device (sysfs_path);
 	if (device == NULL)
@@ -161,11 +170,11 @@ bus_device_got_parent (HalDevice * parent, void *data1, void *data2)
 	 */
 	new_udi = rename_and_merge (d, self->compute_udi, self->hal_bus_name);
 	if (new_udi != NULL) {
-		new_d = ds_device_find (new_udi);
-		if (new_d != NULL) {
-			ds_gdl_add (new_d);
-		}
+		new_d = hal_device_store_find (hald_get_gdl (), new_udi);
+		hal_device_store_add (hald_get_gdl (),
+				      new_d != NULL ? new_d : d);
 	}
+	g_object_unref (d);
 }
 
 /** This function is called when all device detection on startup is done

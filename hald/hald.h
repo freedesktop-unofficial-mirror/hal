@@ -38,14 +38,10 @@
  *  @{
  */
 
-char *xstrdup (const char *str);
-void *xmalloc (unsigned int how_much);
+HalDeviceStore *hald_get_gdl (void);
 
 void property_atomic_update_begin ();
 void property_atomic_update_end ();
-
-void emit_condition (HalDevice * device, const char *condition_name,
-		     int first_arg_type, ...);
 
 /**
  *  @}
