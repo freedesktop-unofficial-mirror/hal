@@ -399,7 +399,7 @@ rename_and_merge (HalDevice * d,
 	/* udi is a temporary udi */
 
 	append_num = -1;
-      tryagain:
+tryagain:
 	/* compute the udi for the device */
 	computed_udi = (*naming_func) (d, append_num);
 
@@ -456,6 +456,10 @@ rename_and_merge (HalDevice * d,
 			 *  computed_udi and try again! */
 			append_num++;
 			goto tryagain;
+		} else {
+			/* must be another instance of this type of device */
+			append_num++;
+			goto tryagain;
 		}
 
 		/* It did exist! Merge our properties from the probed device
@@ -480,6 +484,7 @@ rename_and_merge (HalDevice * d,
 		/* Device is not in list... */
 
 		/* assign the computed device name */
+		HAL_INFO ((" ##### computed_udi=%s", computed_udi));
 		hal_device_set_udi (d, computed_udi);
 		hal_device_property_set_string (d, "info.udi", computed_udi);
 

@@ -194,11 +194,7 @@ visit_device (const char *path, dbus_bool_t visit_children)
 	if (device == NULL)
 		DIE (("Coulnd't get sysfs device object for path %s", path));
 
-/*
-    printf("############\n");
-    printf("############    %s  busid=%s\n", device->bus, device->bus_id);
-    printf("############\n");
-*/
+	/*HAL_INFO ((" path=%s", path));*/
 
 	for (i=0; bus_device_handlers[i] != NULL; i++) {
 		BusDeviceHandler *bh = bus_device_handlers[i];
