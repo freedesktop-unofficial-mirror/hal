@@ -350,7 +350,7 @@ cdrom_get_properties (HalDevice *d, const char *device_file)
 		hal_device_property_set_bool (d, "storage.cdrom.dvdr", TRUE);
 	}
 	if (capabilities & CDC_DVD_RAM) {
-		hal_device_property_set_bool (d, "storage.dvdram", TRUE);
+		hal_device_property_set_bool (d, "storage.cdrom.dvdram", TRUE);
 	}
 	
 	/* while we're at it, check if we support media changed */
