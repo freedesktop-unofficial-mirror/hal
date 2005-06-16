@@ -767,6 +767,10 @@ detect_disc (HalDevice *d, const char *device_file)
 			hal_device_property_set_string (d, "volume.disc.type", "dvd_plus_r");
 			hal_device_property_set_bool (d, "volume.disc.is_rewritable", TRUE);
 			break;
+		case 0x2B: /* DVD+R Double Layer */
+			hal_device_property_set_string (d, "volume.disc.type", "dvd_plus_r_dl");
+			hal_device_property_set_bool (d, "volume.disc.is_rewritable", TRUE);
+			break;
 		default: 
 			break;
 		}
