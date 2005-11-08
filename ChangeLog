@@ -1,8 +1,14 @@
+2005-11-08  Danny Kukawka  <danny.kukawka@web.de>
+
+	* fdi/90defaultpolicy/storage-policy.fdi: fixed fd.o bug #2509
+	changed for VFAT from *.iocharset=utf8 (is not recommended, see:
+	/usr/src/linux/Documentation/filesystems/vfat.txt) to *.utf8=true 
+
 2005-06-16  William Jon McCann  <mccann@jhu.edu>
 
 	* hald/linux/block_class_device.c (detect_disc):
 	Add support for DVD+R DL media.
- 
+
 2005-05-20  David Zeuthen  <davidz@redhat.com>
 
 	* hald/linux/block_class_device.c (cdrom_get_properties): Here is
