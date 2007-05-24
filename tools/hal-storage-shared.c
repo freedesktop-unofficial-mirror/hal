@@ -560,7 +560,7 @@ lock_hal_mtab (void)
 
 	printf ("%d: XYA attempting to get lock on /media/.hal-mtab-lock\n", getpid ());
 
-	lock_mtab_fd = open ("/media/.hal-mtab-lock", O_CREAT | O_RDWR);
+	lock_mtab_fd = open ("/media/.hal-mtab-lock", O_CREAT | O_RDWR, 0600);
 
 	if (lock_mtab_fd < 0)
 		return FALSE;
